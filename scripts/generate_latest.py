@@ -6,7 +6,6 @@ RSS_URL = "https://rss.beehiiv.com/feeds/NRMXBlkDdv.xml"
 
 
 def fetch_rss() -> str:
-    # Use a normal browser-like User-Agent so Beehiiv/CDN doesn't 403 us
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -15,7 +14,6 @@ def fetch_rss() -> str:
         )
     }
     req = Request(RSS_URL, headers=headers)
-
     with urlopen(req, timeout=20) as resp:
         return resp.read().decode("utf-8", errors="replace")
 
@@ -24,13 +22,11 @@ def main():
     try:
         xml = fetch_rss()
     except (HTTPError, URLError) as e:
-        # If the fetch fails, keep the existing page instead of crashing the workflow
         print(f"Failed to fetch RSS: {e}")
         return
 
-    # Grab the full edition from <content:encoded><![CDATA[ ... ]]>
     m = re.search(
-        r"<content:encoded><!\[CDATA\[(.*)\]\]></content:encoded>",
+        r"<content:encoded><!\[CDATA\[(.*?)\]\]></content:encoded>",
         xml,
         re.DOTALL,
     )
@@ -38,7 +34,6 @@ def main():
     if m:
         body_html = m.group(1)
     else:
-        # Fallback to <description> if content:encoded is missing
         m2 = re.search(
             r"<description><!\[CDATA\[(.*)\]\]></description>",
             xml,
