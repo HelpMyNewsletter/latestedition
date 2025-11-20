@@ -114,6 +114,18 @@ def main():
 </head>
 <body>
 {body_html}
+<script>
+  // auto-resize iframe height via postMessage
+  function reportHeight() {
+    const height = document.body.scrollHeight;
+    parent.postMessage({ type: "resize-latest-edition", height }, "*");
+  }
+
+  window.addEventListener("load", reportHeight);
+  window.addEventListener("resize", reportHeight);
+  new MutationObserver(reportHeight).observe(document.body, { childList: true, subtree: true });
+</script>
+
 </body>
 </html>
 """
