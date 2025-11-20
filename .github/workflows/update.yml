@@ -2,8 +2,8 @@ name: Update Latest Edition
 
 on:
   schedule:
-    - cron: '*/30 * * * *'   # checks every 30 minutes
-  workflow_dispatch:         # lets you run manually
+    - cron: "*/30 * * * *"   # every 30 minutes
+  workflow_dispatch:         # manual run button
 
 jobs:
   build:
@@ -11,28 +11,31 @@ jobs:
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
-      - name: Install xmlstarlet
-        run: sudo apt-get update && sudo apt-get install -y xmlstarlet
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
 
-
-      - name: Fetch RSS
+      - name: Generate latest index.html
         run: |
-          curl -L "https://rss.beehiiv.com/feeds/NRMXBlkDdv.xml" -o feed.xml
+          python scripts/generate_latest.py
 
-      - name: Extract latest content
-        run: |
-          latest=$(xmlstarlet sel -t -c "//item[1]/content:encoded" feed.xml)
-          echo "$latest" > index.html
-
-      - name: Commit changes
+      - name: Commit and push if changed
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
           git add index.html
-          git commit -m "Updated latest edition" || echo "No changes to commit"
 
-      - name: Push changes
-        run: |
+          # If nothing changed, do not commit
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+
+          git commit -m "Update latest edition"
           git push
+
