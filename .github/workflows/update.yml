@@ -1,0 +1,38 @@
+name: Update Latest Edition
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'   # checks every 30 minutes
+  workflow_dispatch:         # lets you run manually
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v3
+
+      - name: Install xmlstarlet
+        run: sudo apt-get update && sudo apt-get install -y xmlstarlet
+
+
+      - name: Fetch RSS
+        run: |
+          curl -L "https://rss.beehiiv.com/feeds/NRMXBlkDdv.xml" -o feed.xml
+
+      - name: Extract latest content
+        run: |
+          latest=$(xmlstarlet sel -t -c "//item[1]/content:encoded" feed.xml)
+          echo "$latest" > index.html
+
+      - name: Commit changes
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+          git add index.html
+          git commit -m "Updated latest edition" || echo "No changes to commit"
+
+      - name: Push changes
+        run: |
+          git push
