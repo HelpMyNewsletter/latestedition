@@ -33,7 +33,7 @@ def remove_polls(html: str) -> str:
         r"<beehiiv-poll[\s\S]*?</beehiiv-poll>",
         "",
         html,
-        flags=re.IGNORECASE
+        flags=re.IGNORECASE,
     )
 
     # Remove <div data-poll-id="…">…</div> blocks
@@ -41,7 +41,7 @@ def remove_polls(html: str) -> str:
         r"<div[^>]*data-poll-id[^>]*>[\s\S]*?</div>",
         "",
         html,
-        flags=re.IGNORECASE
+        flags=re.IGNORECASE,
     )
 
     # Remove older bh-poll wrapper blocks
@@ -49,7 +49,7 @@ def remove_polls(html: str) -> str:
         r"<div[^>]*class=[\"']?bh-poll[^>]*>[\s\S]*?</div>",
         "",
         html,
-        flags=re.IGNORECASE
+        flags=re.IGNORECASE,
     )
 
     # Remove Beehiiv poll script tags
@@ -57,15 +57,30 @@ def remove_polls(html: str) -> str:
         r"<script[^>]*poll\.beehiiv\.com[^>]*>[\s\S]*?</script>",
         "",
         html,
-        flags=re.IGNORECASE
+        flags=re.IGNORECASE,
     )
     html = re.sub(
         r"<script[^>]*poll\.beehiiv\.com[^>]*/>",
         "",
         html,
-        flags=re.IGNORECASE
+        flags=re.IGNORECASE,
     )
 
+    return html
+
+
+def strip_beehiiv_footer(html: str) -> str:
+    """
+    Remove Beehiiv's default 'Powered by beehiiv' footer section
+    from the end of the HTML, if present.
+    We key off the visible text so we don't care about exact markup.
+    """
+    marker = "powered by beehiiv"
+    lower_html = html.lower()
+    idx = lower_html.find(marker)
+    if idx != -1:
+        # Cut everything from the marker onward
+        return html[:idx]
     return html
 
 
@@ -93,8 +108,9 @@ def main():
         )
         body_html = m2.group(1) if m2 else "<p>No content found.</p>"
 
-    # Remove polls before output
+    # Remove polls and Beehiiv footer before output
     body_html = remove_polls(body_html)
+    body_html = strip_beehiiv_footer(body_html)
 
     full_page = f"""<!DOCTYPE html>
 <html lang="en">
@@ -105,16 +121,63 @@ def main():
   <style>
     body {{
       margin: 0;
-      padding: 0;
+      padding: 0 0 40px 0;
       background: #000000;
       color: #ffffff;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     }}
+    .hmn-shell {{
+      max-width: 568px;
+      margin: 0 auto;
+      padding: 16px 16px 0 16px;
+    }}
+    .hmn-footer {{
+      max-width: 568px;
+      margin: 24px auto 0 auto;
+      padding: 16px 16px 0 16px;
+      border-top: 1px solid #333333;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+    }}
+    .hmn-footer a img {{
+      display: block;
+      max-height: 48px;
+      width: auto;
+      border-radius: 8px;
+    }}
+    @media (max-width: 480px) {{
+      .hmn-footer {{
+        flex-direction: column;
+        align-items: stretch;
+      }}
+      .hmn-footer a {{
+        text-align: center;
+      }}
+    }}
   </style>
 </head>
 <body>
-{body_html}
+  <div class="hmn-shell">
+    {body_html}
+  </div>
 
+  <div class="hmn-footer">
+    <a href="https://www.beehiiv.com?via=JenniferGibbs1"
+       target="_blank" rel="noopener noreferrer">
+      <img
+        src="https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/de8db07f-5edf-4790-be80-2c28563eede9/Add_a_subheading.png?t=1763656347"
+        alt="Start your newsletter on beehiiv">
+    </a>
+
+    <a href="https://clarity.fm/jennifergibbs/helpmynewsletter"
+       target="_blank" rel="noopener noreferrer">
+      <img
+        src="https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/f5603471-e469-4bfe-94a6-dd08601cbbd5/Add_a_subheading__1_.png?t=1763656403"
+        alt="Book a free 15-minute Help My Newsletter consult">
+    </a>
+  </div>
 </body>
 </html>
 """
