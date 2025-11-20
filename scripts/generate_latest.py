@@ -18,6 +18,57 @@ def fetch_rss() -> str:
         return resp.read().decode("utf-8", errors="replace")
 
 
+def remove_polls(html: str) -> str:
+    """
+    Removes Beehiiv poll blocks regardless of format.
+    Covers:
+      - <beehiiv-poll ...></beehiiv-poll>
+      - <div data-poll-id="...">...</div>
+      - <script src="https://poll.beehiiv.com/..."></script>
+      - <div class="bh-poll ...">...</div>
+    """
+
+    # Remove <beehiiv-poll>…</beehiiv-poll> blocks
+    html = re.sub(
+        r"<beehiiv-poll[\s\S]*?</beehiiv-poll>",
+        "",
+        html,
+        flags=re.IGNORECASE
+    )
+
+    # Remove <div data-poll-id="…">…</div> blocks
+    html = re.sub(
+        r"<div[^>]*data-poll-id[^>]*>[\s\S]*?</div>",
+        "",
+        html,
+        flags=re.IGNORECASE
+    )
+
+    # Remove older bh-poll wrapper blocks
+    html = re.sub(
+        r"<div[^>]*class=[\"']?bh-poll[^>]*>[\s\S]*?</div>",
+        "",
+        html,
+        flags=re.IGNORECASE
+    )
+
+    # Remove Beehiiv poll script tags
+    html = re.sub(
+        r"<script[^>]*poll\.beehiiv\.com[^>]*>[\s\S]*?</script>",
+        "",
+        html,
+        flags=re.IGNORECASE
+    )
+    html = re.sub(
+        r"<script[^>]*poll\.beehiiv\.com[^>]*/>",
+        "",
+        html,
+        flags=re.IGNORECASE
+    )
+
+    return html
+
+
 def main():
     try:
         xml = fetch_rss()
@@ -25,6 +76,7 @@ def main():
         print(f"Failed to fetch RSS: {e}")
         return
 
+    # Find ONLY the first edition’s content (non-greedy)
     m = re.search(
         r"<content:encoded><!\[CDATA\[(.*?)\]\]></content:encoded>",
         xml,
@@ -39,7 +91,10 @@ def main():
             xml,
             re.DOTALL,
         )
-        body_html = m2.group(1) if m2 else "<p>No content found in RSS.</p>"
+        body_html = m2.group(1) if m2 else "<p>No content found.</p>"
+
+    # Remove polls before output
+    body_html = remove_polls(body_html)
 
     full_page = f"""<!DOCTYPE html>
 <html lang="en">
