@@ -1,15 +1,34 @@
 import re
-from urllib.request import urlopen
+from urllib.request import urlopen, Request
+from urllib.error import HTTPError, URLError
 
 RSS_URL = "https://rss.beehiiv.com/feeds/NRMXBlkDdv.xml"
 
 
-def main():
-    # Fetch RSS XML
-    with urlopen(RSS_URL, timeout=20) as resp:
-        xml = resp.read().decode("utf-8", errors="replace")
+def fetch_rss() -> str:
+    # Use a normal browser-like User-Agent so Beehiiv/CDN doesn't 403 us
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0 Safari/537.36"
+        )
+    }
+    req = Request(RSS_URL, headers=headers)
 
-    # Try to grab the full edition from <content:encoded><![CDATA[ ... ]]>
+    with urlopen(req, timeout=20) as resp:
+        return resp.read().decode("utf-8", errors="replace")
+
+
+def main():
+    try:
+        xml = fetch_rss()
+    except (HTTPError, URLError) as e:
+        # If the fetch fails, keep the existing page instead of crashing the workflow
+        print(f"Failed to fetch RSS: {e}")
+        return
+
+    # Grab the full edition from <content:encoded><![CDATA[ ... ]]>
     m = re.search(
         r"<content:encoded><!\[CDATA\[(.*)\]\]></content:encoded>",
         xml,
@@ -19,7 +38,7 @@ def main():
     if m:
         body_html = m.group(1)
     else:
-        # Fallback to <description> if content:encoded is missing for some reason
+        # Fallback to <description> if content:encoded is missing
         m2 = re.search(
             r"<description><!\[CDATA\[(.*)\]\]></description>",
             xml,
@@ -27,7 +46,6 @@ def main():
         )
         body_html = m2.group(1) if m2 else "<p>No content found in RSS.</p>"
 
-    # Wrap it in a minimal dark HTML shell
     full_page = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
