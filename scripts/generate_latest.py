@@ -1,5 +1,4 @@
 import re
-from datetime import datetime
 from email.utils import parsedate_to_datetime
 from urllib.request import urlopen, Request
 from urllib.error import HTTPError, URLError
@@ -42,21 +41,6 @@ def get_tag_value(item_html: str, tag_name: str) -> str:
     return value.strip()
 
 
-def parse_item_date(date_text: str):
-    if not date_text:
-        return None
-
-    try:
-        return parsedate_to_datetime(date_text)
-    except Exception:
-        pass
-
-    try:
-        return datetime.fromisoformat(date_text.replace("Z", "+00:00"))
-    except Exception:
-        return None
-
-
 def get_item_date(item_html: str):
     date_text = (
         get_tag_value(item_html, "pubDate")
@@ -64,7 +48,13 @@ def get_item_date(item_html: str):
         or get_tag_value(item_html, "atom:updated")
     )
 
-    return parse_item_date(date_text)
+    if not date_text:
+        return None
+
+    try:
+        return parsedate_to_datetime(date_text)
+    except Exception:
+        return None
 
 
 def extract_items(xml: str) -> list[str]:
@@ -116,6 +106,14 @@ def extract_latest_body(xml: str) -> str:
 
 
 def extract_custom_html_blocks(html: str) -> str:
+    """
+    Keep only beehiiv custom_html blocks.
+
+    This removes beehiiv-native insertions such as:
+    ads, referral blocks, boosts, recommendations, polls, and generic
+    beehiiv sections injected between custom HTML blocks.
+    """
+
     blocks = []
     search_pos = 0
 
@@ -215,6 +213,10 @@ def remove_native_beehiiv_leftovers(html: str) -> str:
 
 
 def constrain_email_tables(html: str) -> str:
+    """
+    Make inherited email tables behave inside the web preview frame.
+    """
+
     html = re.sub(
         r'width=["\']600["\']',
         'width="100%"',
@@ -247,6 +249,10 @@ def constrain_email_tables(html: str) -> str:
 
 
 def protect_header_logo(html: str) -> str:
+    """
+    Keep the main Help My Newsletter logo small.
+    """
+
     html = re.sub(
         r'(<img[^>]+alt=["\']Help My Newsletter["\'][^>]*)(>)',
         r'\1 class="hmn-header-logo"\2',
