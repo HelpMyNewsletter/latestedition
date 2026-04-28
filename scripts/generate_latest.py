@@ -16,7 +16,9 @@ def fetch_rss() -> str:
             "Chrome/120.0 Safari/537.36"
         )
     }
+
     req = Request(RSS_URL, headers=headers)
+
     with urlopen(req, timeout=20) as resp:
         return resp.read().decode("utf-8", errors="replace")
 
@@ -40,16 +42,19 @@ def extract_latest_body(xml: str) -> str:
         flags=re.IGNORECASE | re.DOTALL,
     )
 
-    return desc_match.group(1) if desc_match else "<p>No content found.</p>"
+    if desc_match:
+        return desc_match.group(1)
+
+    return "<p>No content found.</p>"
 
 
 def remove_polls(html: str) -> str:
     patterns = [
-        r"<beehiiv-poll[\s\S]*?</beehiiv-poll>",
-        r"<div[^>]*data-poll-id[^>]*>[\s\S]*?</div>",
-        r"<div[^>]*class=[\"'][^\"']*bh-poll[^\"']*[\"'][^>]*>[\s\S]*?</div>",
-        r"<script[^>]*poll\.beehiiv\.com[^>]*>[\s\S]*?</script>",
-        r"<script[^>]*poll\.beehiiv\.com[^>]*/>",
+        r'''<beehiiv-poll[\s\S]*?</beehiiv-poll>''',
+        r'''<div[^>]*data-poll-id[^>]*>[\s\S]*?</div>''',
+        r'''<div[^>]*class=["'][^"']*bh-poll[^"']*["'][^>]*>[\s\S]*?</div>''',
+        r'''<script[^>]*poll\.beehiiv\.com[^>]*>[\s\S]*?</script>''',
+        r'''<script[^>]*poll\.beehiiv\.com[^>]*/>''',
     ]
 
     for pattern in patterns:
@@ -59,48 +64,27 @@ def remove_polls(html: str) -> str:
 
 
 def remove_native_ads(html: str) -> str:
-    """
-    Strip beehiiv native ad / boost / sponsorship blocks from the HTML body.
-
-    Beehiiv injects ads via several recognisable patterns:
-      - <div data-sponsorship-id="...">
-      - <div data-ad-...="...">
-      - class attributes containing: bh-ad, beehiiv-ad, sponsored, boost, native-ad, ad-wrapper
-      - <beehiiv-ad> custom elements
-      - <script> tags that load ads.beehiiv.com or boosts.beehiiv.com
-      - Anchor tags whose href points to beehiiv's ad/boost redirect endpoint
-
-    Strategy: remove the entire containing block so no orphaned whitespace
-    or broken layout is left behind.
-    """
-
     patterns = [
-        # ── Custom elements ────────────────────────────────────────────────
-        r"<beehiiv-ad[\s\S]*?</beehiiv-ad>",
+        # Custom beehiiv ad elements
+        r'''<beehiiv-ad[\s\S]*?</beehiiv-ad>''',
+        r'''<beehiiv-ad[^>]*/>''',
 
-        # ── data-* attribute markers on any element ────────────────────────
-        # Greedy block removal for common block-level containers
-        r"<(?:div|section|aside|article)[^>]*data-sponsorship[^>]*>[\s\S]*?</(?:div|section|aside|article)>",
-        r"<(?:div|section|aside|article)[^>]*data-ad-[^>]*>[\s\S]*?</(?:div|section|aside|article)>",
-        r"<(?:div|section|aside|article)[^>]*data-boost[^>]*>[\s\S]*?</(?:div|section|aside|article)>",
+        # Data attribute ad markers
+        r'''<(?:div|section|aside|article)[^>]*data-sponsorship[^>]*>[\s\S]*?</(?:div|section|aside|article)>''',
+        r'''<(?:div|section|aside|article)[^>]*data-ad-[^>]*>[\s\S]*?</(?:div|section|aside|article)>''',
+        r'''<(?:div|section|aside|article)[^>]*data-boost[^>]*>[\s\S]*?</(?:div|section|aside|article)>''',
 
-        # ── Class-name markers ─────────────────────────────────────────────
-        r"<(?:div|section|aside|article)[^>]*class=[\"'][^\"']*\bsponsored\b[^\"']*[\"'][^>]*>[\s\S]*?</(?:div|section|aside|article)>",
-        r"<(?:div|section|aside|article)[^>]*class=[\"'][^\"']*\bbh-ad\b[^\"']*[\"'][^>]*>[\s\S]*?</(?:div|section|aside|article)>",
-        r"<(?:div|section|aside|article)[^>]*class=[\"'][^\"']*\bbeehiiv-ad\b[^\"']*[\"'][^>]*>[\s\S]*?</(?:div|section|aside|article)>",
-        r"<(?:div|section|aside|article)[^>]*class=[\"'][^\"']*\bnative-ad\b[^\"']*[\"'][^>]*>[\s\S]*?</(?:div|section|aside|article)>",
-        r"<(?:div|section|aside|article)[^>]*class=[\"'][^\"']*\bad-wrapper\b[^\"']*[\"'][^>]*>[\s\S]*?</(?:div|section|aside|article)>",
-        r"<(?:div|section|aside|article)[^>]*class=[\"'][^\"']*\bbeehiiv-boost\b[^\"']*[\"'][^>]*>[\s\S]*?</(?:div|section|aside|article)>",
+        # Class/id based native blocks
+        r'''<(?:div|section|aside|article)[^>]*(class|id)=["'][^"']*(bh-ad|beehiiv-ad|native-ad|ad-wrapper|beehiiv-boost|sponsored)[^"']*["'][^>]*>[\s\S]*?</(?:div|section|aside|article)>''',
 
-        # ── External script loaders ────────────────────────────────────────
-        r"<script[^>]*ads\.beehiiv\.com[^>]*>[\s\S]*?</script>",
-        r"<script[^>]*ads\.beehiiv\.com[^>]*/>",
-        r"<script[^>]*boosts\.beehiiv\.com[^>]*>[\s\S]*?</script>",
-        r"<script[^>]*boosts\.beehiiv\.com[^>]*/>",
+        # External beehiiv ad/boost loaders
+        r'''<script[^>]*ads\.beehiiv\.com[^>]*>[\s\S]*?</script>''',
+        r'''<script[^>]*ads\.beehiiv\.com[^>]*/>''',
+        r'''<script[^>]*boosts\.beehiiv\.com[^>]*>[\s\S]*?</script>''',
+        r'''<script[^>]*boosts\.beehiiv\.com[^>]*/>''',
 
-        # ── Beehiiv ad redirect links (wrapping images or CTAs) ───────────
-        # Removes the entire anchor; leaves the surrounding paragraph intact.
-        r"<a[^>]*href=[\"']https://(?:track\.)?beehiiv\.com/[^\"']*(?:ad|boost|sponsor)[^\"']*[\"'][^>]*>[\s\S]*?</a>",
+        # Beehiiv redirect links
+        r'''<a[^>]*href=["']https://(?:track\.)?beehiiv\.com/[^"']*(?:ad|boost|sponsor)[^"']*["'][^>]*>[\s\S]*?</a>''',
     ]
 
     for pattern in patterns:
@@ -110,75 +94,90 @@ def remove_native_ads(html: str) -> str:
 
 
 def remove_section_ads(html: str) -> str:
-    """
-    Remove <div class="section"> blocks that contain beehiiv native ad/boost
-    tracking markers in their URLs.
-
-    beehiiv injects native ads as plain <div class="section"> wrappers — the
-    same class used for editorial sections — so class-name matching alone cannot
-    distinguish them.  The reliable signal is the presence of beehiiv-specific
-    ad-tracking query parameters anywhere inside the block:
-
-        utm_source=beehiivads   — beehiiv Ad Network placements
-        _bhiiv=opp_             — beehiiv opportunity (boost / ad) tracking
-        bhcl_id=                — beehiiv click-level tracking parameter
-
-    Strategy: for each marker found in the HTML, walk backward to the nearest
-    opening <div class="section"…>, then use a depth counter to find its
-    matching </div>, and excise the entire block.  Repeat until no markers
-    remain (one pass can leave more if multiple ads are present).
-    """
-    AD_MARKERS = [
+    ad_markers = [
         "utm_source=beehiivads",
         "_bhiiv=opp_",
         "bhcl_id=",
+        "turn-ai-into-extra-income",
+        "mindstream.news",
     ]
 
-    # Compiled pattern to find the opening tag of a "section" div
-    SECTION_OPEN = re.compile(
-        r'<div[^>]*class=["\'][^"\']*\bsection\b[^"\']*["\']',
+    section_open = re.compile(
+        r'''<div[^>]*class=["'][^"']*\bsection\b[^"']*["'][^>]*>''',
         re.IGNORECASE,
     )
 
     changed = True
+
     while changed:
         changed = False
-        for marker in AD_MARKERS:
-            marker_pos = html.find(marker)
-            if marker_pos == -1:
-                continue
+        lower_html = html.lower()
 
-            # Find the last <div class="section"…> that opens before the marker
-            preceding = html[:marker_pos]
-            section_matches = list(SECTION_OPEN.finditer(preceding))
-            if not section_matches:
-                continue
+        marker_pos = -1
 
-            start_match = section_matches[-1]
-            start_pos = start_match.start()
+        for marker in ad_markers:
+            marker_pos = lower_html.find(marker.lower())
+            if marker_pos != -1:
+                break
 
-            # Walk forward from start_pos counting div opens/closes
-            depth = 0
-            i = start_pos
-            end_pos = None
-            while i < len(html):
-                if html[i : i + 4].lower() == "<div":
-                    depth += 1
-                    close_bracket = html.find(">", i)
-                    i = (close_bracket + 1) if close_bracket != -1 else len(html)
-                elif html[i : i + 6].lower() == "</div>":
-                    depth -= 1
-                    if depth == 0:
-                        end_pos = i + 6
-                        break
-                    i += 6
-                else:
-                    i += 1
+        if marker_pos == -1:
+            break
 
-            if end_pos is not None:
-                html = html[:start_pos] + html[end_pos:]
-                changed = True
-                break  # restart scan; indices have shifted
+        preceding_html = html[:marker_pos]
+        section_matches = list(section_open.finditer(preceding_html))
+
+        if not section_matches:
+            break
+
+        start_pos = section_matches[-1].start()
+
+        depth = 0
+        i = start_pos
+        end_pos = None
+
+        while i < len(html):
+            if html[i:i + 4].lower() == "<div":
+                depth += 1
+                close_bracket = html.find(">", i)
+                if close_bracket == -1:
+                    break
+                i = close_bracket + 1
+
+            elif html[i:i + 6].lower() == "</div>":
+                depth -= 1
+                i += 6
+
+                if depth == 0:
+                    end_pos = i
+                    break
+
+            else:
+                i += 1
+
+        if end_pos is None:
+            break
+
+        html = html[:start_pos] + html[end_pos:]
+        changed = True
+
+    return html
+
+
+def remove_common_native_blocks(html: str) -> str:
+    patterns = [
+        # Do not include "beehiiv" here, because the whole RSS body is wrapped in class='beehiiv'
+        r'''<div[^>]*(class|id)=["'][^"']*(bh-|poll|referral|recommendation|boost|advertisement|sponsor|survey|subscribe|comment)[^"']*["'][^>]*>[\s\S]*?</div>''',
+
+        # Beehiiv referral/recommendation/boost links
+        r'''<a[^>]*href=["'][^"']*beehiiv\.com[^"']*(referral|recommend|boost|subscribe|poll|survey)[^"']*["'][^>]*>[\s\S]*?</a>''',
+
+        # Common native copy blocks
+        r'''<p[^>]*>[\s\S]*?(Share this newsletter|Refer a friend|Subscribe to keep reading|Leave a comment|Take the poll|Vote in the poll|Sponsored by|Advertisement)[\s\S]*?</p>''',
+        r'''<div[^>]*>[\s\S]*?(Share this newsletter|Refer a friend|Subscribe to keep reading|Leave a comment|Take the poll|Vote in the poll|Sponsored by|Advertisement)[\s\S]*?</div>''',
+    ]
+
+    for pattern in patterns:
+        html = re.sub(pattern, "", html, flags=re.IGNORECASE)
 
     return html
 
@@ -193,11 +192,12 @@ def strip_beehiiv_footer(html: str) -> str:
 
     lower_html = html.lower()
 
-    found_indexes = [
-        lower_html.find(marker)
-        for marker in markers
-        if lower_html.find(marker) != -1
-    ]
+    found_indexes = []
+
+    for marker in markers:
+        idx = lower_html.find(marker)
+        if idx != -1:
+            found_indexes.append(idx)
 
     if found_indexes:
         return html[:min(found_indexes)]
@@ -207,8 +207,9 @@ def strip_beehiiv_footer(html: str) -> str:
 
 def clean_html(html: str) -> str:
     html = remove_polls(html)
-    html = remove_native_ads(html)          # class/attribute-based ad blocks
-    html = remove_section_ads(html)         # beehiiv native ad .section blocks
+    html = remove_native_ads(html)
+    html = remove_section_ads(html)
+    html = remove_common_native_blocks(html)
     html = strip_beehiiv_footer(html)
 
     html = re.sub(r"\n\s*\n\s*\n+", "\n\n", html)
@@ -296,11 +297,6 @@ def main():
     max-width: 100% !important;
   }}
 
-  /*
-   * Safety net: if any beehiiv native-ad / boost block slips past the
-   * Python stripper, hide it entirely.  The selector list mirrors the
-   * class names and data-attributes targeted in remove_native_ads().
-   */
   .hmn-shell [class*="bh-ad"],
   .hmn-shell [class*="beehiiv-ad"],
   .hmn-shell [class*="native-ad"],
@@ -313,16 +309,10 @@ def main():
     display: none !important;
   }}
 
-  /*
-   * CSS fallback for .section ad blocks: hide any .section that contains
-   * a link whose href carries beehiiv ad-tracking parameters.
-   * :has() is supported in all modern browsers (Chrome 105+, Safari 15.4+,
-   * Firefox 121+).  Older browsers simply ignore this rule; the Python
-   * stripper handles removal for them.
-   */
   .hmn-shell .section:has(a[href*="beehiivads"]),
   .hmn-shell .section:has(a[href*="_bhiiv=opp_"]),
-  .hmn-shell .section:has(a[href*="bhcl_id="]) {{
+  .hmn-shell .section:has(a[href*="bhcl_id="]),
+  .hmn-shell .section:has(a[href*="mindstream.news"]) {{
     display: none !important;
   }}
 
