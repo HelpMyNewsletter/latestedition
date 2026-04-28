@@ -58,81 +58,6 @@ def remove_polls(html: str) -> str:
     return html
 
 
-def remove_beehiiv_ads(html: str) -> str:
-    """
-    Remove beehiiv ads even when they are wrapped in generic nested sections.
-    This targets the whole ad section from its opening section div through
-    the next custom_html block.
-    """
-
-    ad_markers = [
-        "utm_source=beehiivads",
-        "_bhiiv=opp_",
-        "bhcl_id",
-        "Turn AI Into Extra Income",
-        "mindstream.news",
-    ]
-
-    for marker in ad_markers:
-        while marker.lower() in html.lower():
-            lower_html = html.lower()
-            marker_idx = lower_html.find(marker.lower())
-
-            section_start = lower_html.rfind("<div", 0, marker_idx)
-
-            while section_start != -1:
-                div_open = lower_html[section_start:section_start + 500]
-                if "class=" in div_open and "section" in div_open:
-                    break
-                section_start = lower_html.rfind("<div", 0, section_start)
-
-            if section_start == -1:
-                break
-
-            next_custom_html = lower_html.find('<div class="custom_html"', marker_idx)
-
-            if next_custom_html == -1:
-                next_custom_html = lower_html.find("<div class='custom_html'", marker_idx)
-
-            if next_custom_html != -1:
-                html = html[:section_start] + html[next_custom_html:]
-            else:
-                section_end = lower_html.find("</div>", marker_idx)
-
-                if section_end == -1:
-                    break
-
-                html = html[:section_start] + html[section_end + len("</div>"):]
-
-    return html
-
-
-def remove_beehiiv_native_blocks(html: str) -> str:
-    patterns = [
-        r"<beehiiv-[\w-]+[\s\S]*?</beehiiv-[\w-]+>",
-        r"<beehiiv-[\w-]+[^>]*/>",
-
-        r"<script[^>]*beehiiv[^>]*>[\s\S]*?</script>",
-        r"<script[^>]*beehiiv[^>]*/>",
-        r"<iframe[^>]*beehiiv[^>]*>[\s\S]*?</iframe>",
-        r"<iframe[^>]*beehiiv[^>]*/>",
-
-        r"<div[^>]*data-[^>]*(poll|referral|recommendation|boost|ad|advertisement|survey|subscribe|comment)[^>]*>[\s\S]*?</div>",
-
-        r"<div[^>]*(class|id)=[\"'][^\"']*(bh-|poll|referral|recommendation|boost|ad|advertisement|sponsor|survey|subscribe|comment)[^\"']*[\"'][^>]*>[\s\S]*?</div>",
-
-        r"<a[^>]*href=[\"'][^\"']*beehiiv\.com[^\"']*(referral|recommend|boost|subscribe|poll|survey)[^\"']*[\"'][^>]*>[\s\S]*?</a>",
-
-        r"<p[^>]*>[\s\S]*?(Share this newsletter|Refer a friend|Subscribe to keep reading|Leave a comment|Take the poll|Vote in the poll|Sponsored by|Advertisement)[\s\S]*?</p>",
-        r"<div[^>]*>[\s\S]*?(Share this newsletter|Refer a friend|Subscribe to keep reading|Leave a comment|Take the poll|Vote in the poll|Sponsored by|Advertisement)[\s\S]*?</div>",
-    ]
-
-    for pattern in patterns:
-        html = re.sub(pattern, "", html, flags=re.IGNORECASE)
-
-    return html
-
-
 def strip_beehiiv_footer(html: str) -> str:
     markers = [
         "powered by beehiiv",
@@ -157,8 +82,6 @@ def strip_beehiiv_footer(html: str) -> str:
 
 def clean_html(html: str) -> str:
     html = remove_polls(html)
-    html = remove_beehiiv_ads(html)
-    html = remove_beehiiv_native_blocks(html)
     html = strip_beehiiv_footer(html)
 
     html = re.sub(r"\n\s*\n\s*\n+", "\n\n", html)
@@ -195,7 +118,7 @@ def main():
   }}
 
   .hmn-notice {{
-    max-width: 568px;
+    max-width: 600px;
     margin: 20px auto 0 auto;
     padding: 16px 18px;
     background: #151515;
@@ -204,6 +127,7 @@ def main():
     color: #f5f5f5;
     font-size: 15px;
     line-height: 1.5;
+    box-sizing: border-box;
   }}
 
   .hmn-notice strong {{
@@ -221,31 +145,63 @@ def main():
   }}
 
   .hmn-shell {{
-    max-width: 568px;
+    max-width: 600px;
     margin: 0 auto;
     padding: 20px;
+    box-sizing: border-box;
+    overflow-x: hidden;
+  }}
+
+  .hmn-shell img {{
+    max-width: 100% !important;
+    width: auto !important;
+    height: auto !important;
+  }}
+
+  .hmn-shell table {{
+    max-width: 100% !important;
+  }}
+
+  .hmn-shell iframe,
+  .hmn-shell video,
+  .hmn-shell embed,
+  .hmn-shell object {{
+    max-width: 100% !important;
   }}
 
   .hmn-footer {{
-    max-width: 568px;
+    max-width: 600px;
     margin: 28px auto 0 auto;
     padding: 12px 20px;
     border-top: 1px solid #333333;
     display: flex;
     justify-content: space-between;
     align-items: center;
+    box-sizing: border-box;
   }}
 
   .hmn-footer a img {{
     display: block;
     max-height: 64px;
+    max-width: 260px;
     width: auto;
+    height: auto;
   }}
 
   @media (max-width: 480px) {{
+    .hmn-notice,
+    .hmn-shell,
+    .hmn-footer {{
+      max-width: 100%;
+    }}
+
     .hmn-footer {{
       flex-direction: column;
       gap: 16px;
+    }}
+
+    .hmn-footer a img {{
+      max-width: 100%;
     }}
   }}
 </style>
