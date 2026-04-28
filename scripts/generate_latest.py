@@ -109,6 +109,80 @@ def remove_native_ads(html: str) -> str:
     return html
 
 
+def remove_section_ads(html: str) -> str:
+    """
+    Remove <div class="section"> blocks that contain beehiiv native ad/boost
+    tracking markers in their URLs.
+
+    beehiiv injects native ads as plain <div class="section"> wrappers — the
+    same class used for editorial sections — so class-name matching alone cannot
+    distinguish them.  The reliable signal is the presence of beehiiv-specific
+    ad-tracking query parameters anywhere inside the block:
+
+        utm_source=beehiivads   — beehiiv Ad Network placements
+        _bhiiv=opp_             — beehiiv opportunity (boost / ad) tracking
+        bhcl_id=                — beehiiv click-level tracking parameter
+
+    Strategy: for each marker found in the HTML, walk backward to the nearest
+    opening <div class="section"…>, then use a depth counter to find its
+    matching </div>, and excise the entire block.  Repeat until no markers
+    remain (one pass can leave more if multiple ads are present).
+    """
+    AD_MARKERS = [
+        "utm_source=beehiivads",
+        "_bhiiv=opp_",
+        "bhcl_id=",
+    ]
+
+    # Compiled pattern to find the opening tag of a "section" div
+    SECTION_OPEN = re.compile(
+        r'<div[^>]*class=["\'][^"\']*\bsection\b[^"\']*["\']',
+        re.IGNORECASE,
+    )
+
+    changed = True
+    while changed:
+        changed = False
+        for marker in AD_MARKERS:
+            marker_pos = html.find(marker)
+            if marker_pos == -1:
+                continue
+
+            # Find the last <div class="section"…> that opens before the marker
+            preceding = html[:marker_pos]
+            section_matches = list(SECTION_OPEN.finditer(preceding))
+            if not section_matches:
+                continue
+
+            start_match = section_matches[-1]
+            start_pos = start_match.start()
+
+            # Walk forward from start_pos counting div opens/closes
+            depth = 0
+            i = start_pos
+            end_pos = None
+            while i < len(html):
+                if html[i : i + 4].lower() == "<div":
+                    depth += 1
+                    close_bracket = html.find(">", i)
+                    i = (close_bracket + 1) if close_bracket != -1 else len(html)
+                elif html[i : i + 6].lower() == "</div>":
+                    depth -= 1
+                    if depth == 0:
+                        end_pos = i + 6
+                        break
+                    i += 6
+                else:
+                    i += 1
+
+            if end_pos is not None:
+                html = html[:start_pos] + html[end_pos:]
+                changed = True
+                break  # restart scan; indices have shifted
+
+    return html
+
+
 def strip_beehiiv_footer(html: str) -> str:
     markers = [
         "powered by beehiiv",
@@ -133,7 +207,8 @@ def strip_beehiiv_footer(html: str) -> str:
 
 def clean_html(html: str) -> str:
     html = remove_polls(html)
-    html = remove_native_ads(html)          # ← new: strip ad/boost blocks
+    html = remove_native_ads(html)          # class/attribute-based ad blocks
+    html = remove_section_ads(html)         # beehiiv native ad .section blocks
     html = strip_beehiiv_footer(html)
 
     html = re.sub(r"\n\s*\n\s*\n+", "\n\n", html)
@@ -235,6 +310,19 @@ def main():
   .hmn-shell [data-sponsorship-id],
   .hmn-shell [data-boost],
   .hmn-shell beehiiv-ad {{
+    display: none !important;
+  }}
+
+  /*
+   * CSS fallback for .section ad blocks: hide any .section that contains
+   * a link whose href carries beehiiv ad-tracking parameters.
+   * :has() is supported in all modern browsers (Chrome 105+, Safari 15.4+,
+   * Firefox 121+).  Older browsers simply ignore this rule; the Python
+   * stripper handles removal for them.
+   */
+  .hmn-shell .section:has(a[href*="beehiivads"]),
+  .hmn-shell .section:has(a[href*="_bhiiv=opp_"]),
+  .hmn-shell .section:has(a[href*="bhcl_id="]) {{
     display: none !important;
   }}
 
