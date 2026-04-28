@@ -58,6 +58,57 @@ def remove_polls(html: str) -> str:
     return html
 
 
+def remove_native_ads(html: str) -> str:
+    """
+    Strip beehiiv native ad / boost / sponsorship blocks from the HTML body.
+
+    Beehiiv injects ads via several recognisable patterns:
+      - <div data-sponsorship-id="...">
+      - <div data-ad-...="...">
+      - class attributes containing: bh-ad, beehiiv-ad, sponsored, boost, native-ad, ad-wrapper
+      - <beehiiv-ad> custom elements
+      - <script> tags that load ads.beehiiv.com or boosts.beehiiv.com
+      - Anchor tags whose href points to beehiiv's ad/boost redirect endpoint
+
+    Strategy: remove the entire containing block so no orphaned whitespace
+    or broken layout is left behind.
+    """
+
+    patterns = [
+        # ── Custom elements ────────────────────────────────────────────────
+        r"<beehiiv-ad[\s\S]*?</beehiiv-ad>",
+
+        # ── data-* attribute markers on any element ────────────────────────
+        # Greedy block removal for common block-level containers
+        r"<(?:div|section|aside|article)[^>]*data-sponsorship[^>]*>[\s\S]*?</(?:div|section|aside|article)>",
+        r"<(?:div|section|aside|article)[^>]*data-ad-[^>]*>[\s\S]*?</(?:div|section|aside|article)>",
+        r"<(?:div|section|aside|article)[^>]*data-boost[^>]*>[\s\S]*?</(?:div|section|aside|article)>",
+
+        # ── Class-name markers ─────────────────────────────────────────────
+        r"<(?:div|section|aside|article)[^>]*class=[\"'][^\"']*\bsponsored\b[^\"']*[\"'][^>]*>[\s\S]*?</(?:div|section|aside|article)>",
+        r"<(?:div|section|aside|article)[^>]*class=[\"'][^\"']*\bbh-ad\b[^\"']*[\"'][^>]*>[\s\S]*?</(?:div|section|aside|article)>",
+        r"<(?:div|section|aside|article)[^>]*class=[\"'][^\"']*\bbeehiiv-ad\b[^\"']*[\"'][^>]*>[\s\S]*?</(?:div|section|aside|article)>",
+        r"<(?:div|section|aside|article)[^>]*class=[\"'][^\"']*\bnative-ad\b[^\"']*[\"'][^>]*>[\s\S]*?</(?:div|section|aside|article)>",
+        r"<(?:div|section|aside|article)[^>]*class=[\"'][^\"']*\bad-wrapper\b[^\"']*[\"'][^>]*>[\s\S]*?</(?:div|section|aside|article)>",
+        r"<(?:div|section|aside|article)[^>]*class=[\"'][^\"']*\bbeehiiv-boost\b[^\"']*[\"'][^>]*>[\s\S]*?</(?:div|section|aside|article)>",
+
+        # ── External script loaders ────────────────────────────────────────
+        r"<script[^>]*ads\.beehiiv\.com[^>]*>[\s\S]*?</script>",
+        r"<script[^>]*ads\.beehiiv\.com[^>]*/>",
+        r"<script[^>]*boosts\.beehiiv\.com[^>]*>[\s\S]*?</script>",
+        r"<script[^>]*boosts\.beehiiv\.com[^>]*/>",
+
+        # ── Beehiiv ad redirect links (wrapping images or CTAs) ───────────
+        # Removes the entire anchor; leaves the surrounding paragraph intact.
+        r"<a[^>]*href=[\"']https://(?:track\.)?beehiiv\.com/[^\"']*(?:ad|boost|sponsor)[^\"']*[\"'][^>]*>[\s\S]*?</a>",
+    ]
+
+    for pattern in patterns:
+        html = re.sub(pattern, "", html, flags=re.IGNORECASE)
+
+    return html
+
+
 def strip_beehiiv_footer(html: str) -> str:
     markers = [
         "powered by beehiiv",
@@ -82,6 +133,7 @@ def strip_beehiiv_footer(html: str) -> str:
 
 def clean_html(html: str) -> str:
     html = remove_polls(html)
+    html = remove_native_ads(html)          # ← new: strip ad/boost blocks
     html = strip_beehiiv_footer(html)
 
     html = re.sub(r"\n\s*\n\s*\n+", "\n\n", html)
@@ -167,6 +219,23 @@ def main():
   .hmn-shell embed,
   .hmn-shell object {{
     max-width: 100% !important;
+  }}
+
+  /*
+   * Safety net: if any beehiiv native-ad / boost block slips past the
+   * Python stripper, hide it entirely.  The selector list mirrors the
+   * class names and data-attributes targeted in remove_native_ads().
+   */
+  .hmn-shell [class*="bh-ad"],
+  .hmn-shell [class*="beehiiv-ad"],
+  .hmn-shell [class*="native-ad"],
+  .hmn-shell [class*="ad-wrapper"],
+  .hmn-shell [class*="beehiiv-boost"],
+  .hmn-shell [class*="sponsored"],
+  .hmn-shell [data-sponsorship-id],
+  .hmn-shell [data-boost],
+  .hmn-shell beehiiv-ad {{
+    display: none !important;
   }}
 
   .hmn-footer {{
