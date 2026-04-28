@@ -1,374 +1,29 @@
-import re
-from datetime import datetime
-from email.utils import parsedate_to_datetime
-from urllib.request import urlopen, Request
-from urllib.error import HTTPError, URLError
-
-RSS_URL = "https://rss.beehiiv.com/feeds/NRMXBlkDdv.xml"
-SUBSCRIBE_URL = "https://triage.helpmynewsletter.com/subscribe"
-BEEHIIV_AFFILIATE_URL = "https://www.beehiiv.com/?via=JenniferGibbs1"
-BOOKING_URL = "https://calendar.app.google/6E3acH7JZZVMDgLaA"
-
-OLD_BOOKING_URLS = [
-    "https://calendar.app.google/XVrUdL3FD4tfBRhs5",
-    "https://clarity.fm/jennifergibbs/helpmynewsletter",
-]
-
-
-def fetch_rss() -> str:
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0 Safari/537.36"
-        )
-    }
-
-    req = Request(RSS_URL, headers=headers)
-
-    with urlopen(req, timeout=20) as resp:
-        return resp.read().decode("utf-8", errors="replace")
-
-
-def get_tag_value(item_html: str, tag_name: str) -> str:
-    match = re.search(
-        rf"<{tag_name}[^>]*>([\s\S]*?)</{tag_name}>",
-        item_html,
-        flags=re.IGNORECASE,
-    )
-
-    if not match:
-        return ""
-
-    value = match.group(1).strip()
-    value = re.sub(r"^<!\[CDATA\[", "", value)
-    value = re.sub(r"\]\]>$", "", value)
-
-    return value.strip()
-
-
-def parse_item_date(date_text: str):
-    if not date_text:
-        return None
-
-    try:
-        return parsedate_to_datetime(date_text)
-    except Exception:
-        pass
-
-    try:
-        return datetime.fromisoformat(date_text.replace("Z", "+00:00"))
-    except Exception:
-        return None
-
-
-def get_item_date(item_html: str):
-    date_text = (
-        get_tag_value(item_html, "pubDate")
-        or get_tag_value(item_html, "atom:published")
-        or get_tag_value(item_html, "atom:updated")
-    )
-
-    return parse_item_date(date_text)
-
-
-def format_field_notes_date(item_date) -> str:
-    if not item_date:
-        return ""
-
-    return item_date.strftime("%B %-d, %Y")
-
-
-def extract_items(xml: str) -> list[str]:
-    return re.findall(r"<item[\s\S]*?</item>", xml, flags=re.IGNORECASE)
-
-
-def extract_latest_item(xml: str) -> str:
-    items = extract_items(xml)
-
-    if not items:
-        return xml
-
-    dated_items = []
-
-    for item in items:
-        item_date = get_item_date(item)
-        if item_date:
-            dated_items.append((item_date, item))
-
-    if dated_items:
-        dated_items.sort(key=lambda pair: pair[0], reverse=True)
-        return dated_items[0][1]
-
-    return items[0]
-
-
-def extract_latest_body_and_date(xml: str):
-    latest_item = extract_latest_item(xml)
-    latest_date = get_item_date(latest_item)
-
-    content_match = re.search(
-        r"<content:encoded><!\[CDATA\[([\s\S]*?)\]\]></content:encoded>",
-        latest_item,
-        flags=re.IGNORECASE,
-    )
-
-    if content_match:
-        return content_match.group(1), latest_date
-
-    desc_match = re.search(
-        r"<description><!\[CDATA\[([\s\S]*?)\]\]></description>",
-        latest_item,
-        flags=re.IGNORECASE,
-    )
-
-    if desc_match:
-        return desc_match.group(1), latest_date
-
-    return "<p>No content found.</p>", latest_date
-
-
-def extract_custom_html_blocks(html: str) -> str:
-    blocks = []
-    search_pos = 0
-
-    while True:
-        start_match = re.search(
-            r'''<div[^>]*class=["'][^"']*\bcustom_html\b[^"']*["'][^>]*>''',
-            html[search_pos:],
-            flags=re.IGNORECASE,
-        )
-
-        if not start_match:
-            break
-
-        start_pos = search_pos + start_match.start()
-        i = start_pos
-        depth = 0
-        end_pos = None
-
-        while i < len(html):
-            if html[i:i + 4].lower() == "<div":
-                depth += 1
-                close_bracket = html.find(">", i)
-
-                if close_bracket == -1:
-                    break
-
-                i = close_bracket + 1
-
-            elif html[i:i + 6].lower() == "</div>":
-                depth -= 1
-                i += 6
-
-                if depth == 0:
-                    end_pos = i
-                    break
-
-            else:
-                i += 1
-
-        if end_pos is None:
-            break
-
-        blocks.append(html[start_pos:end_pos])
-        search_pos = end_pos
-
-    if blocks:
-        return "\n\n".join(blocks)
-
-    return html
-
-
-def strip_beehiiv_footer(html: str) -> str:
-    markers = [
-        "powered by beehiiv",
-        "published with beehiiv",
-        "unsubscribe",
-        "manage your subscription",
-    ]
-
-    lower_html = html.lower()
-    indexes = []
-
-    for marker in markers:
-        idx = lower_html.find(marker)
-        if idx != -1:
-            indexes.append(idx)
-
-    if indexes:
-        return html[:min(indexes)]
-
-    return html
-
-
-def remove_native_beehiiv_leftovers(html: str) -> str:
-    ad_markers = [
-        "utm_source=beehiivads",
-        "_bhiiv=opp_",
-        "bhcl_id=",
-        "turn-ai-into-extra-income",
-        "mindstream.news",
-        "Turn AI Into Extra Income",
-    ]
-
-    for marker in ad_markers:
-        while marker.lower() in html.lower():
-            lower_html = html.lower()
-            marker_pos = lower_html.find(marker.lower())
-
-            section_start = lower_html.rfind("<div", 0, marker_pos)
-            section_end = lower_html.find("</div>", marker_pos)
-
-            if section_start == -1 or section_end == -1:
-                break
-
-            html = html[:section_start] + html[section_end + 6:]
-
-    html = re.sub(
-        r"<div[^>]*>[\s\S]*?Turn AI Into Extra Income[\s\S]*?</div>",
-        "",
-        html,
-        flags=re.IGNORECASE,
-    )
-
-    return html
-
-
-def normalize_links(html: str) -> str:
-    for old_url in OLD_BOOKING_URLS:
-        html = html.replace(old_url, BOOKING_URL)
-
-    html = html.replace(
-        "https://www.beehiiv.com?via=JenniferGibbs1",
-        BEEHIIV_AFFILIATE_URL,
-    )
-
-    return html
-
-
-def update_field_notes_date(html: str, item_date) -> str:
-    formatted_date = format_field_notes_date(item_date)
-
-    if not formatted_date:
-        return html
-
-    return re.sub(
-        r"Field Notes\s*[—-]\s*[A-Za-z]+\s+\d{1,2},\s+\d{4}",
-        f"Field Notes — {formatted_date}",
-        html,
-        flags=re.IGNORECASE,
-    )
-
-
-def constrain_email_tables(html: str) -> str:
-    html = re.sub(
-        r'width=["\']600["\']',
-        'width="100%"',
-        html,
-        flags=re.IGNORECASE,
-    )
-
-    html = re.sub(
-        r"width:600px;max-width:600px;",
-        "width:100%;max-width:100%;",
-        html,
-        flags=re.IGNORECASE,
-    )
-
-    html = re.sub(
-        r"width:\s*600px",
-        "width:100%",
-        html,
-        flags=re.IGNORECASE,
-    )
-
-    html = re.sub(
-        r"max-width:\s*600px",
-        "max-width:100%",
-        html,
-        flags=re.IGNORECASE,
-    )
-
-    return html
-
-
-def protect_header_logo(html: str) -> str:
-    html = re.sub(
-        r'(<img[^>]+alt=["\']Help My Newsletter["\'][^>]*)(>)',
-        r'\1 class="hmn-header-logo"\2',
-        html,
-        count=1,
-        flags=re.IGNORECASE,
-    )
-
-    html = re.sub(
-        r'(<img[^>]+alt=["\']Help My Newsletter["\'][^>]*style=["\'][^"\']*)',
-        r'\1;width:56px!important;max-width:56px!important;height:56px!important;',
-        html,
-        count=1,
-        flags=re.IGNORECASE,
-    )
-
-    return html
-
-
-def clean_html(html: str, item_date) -> str:
-    html = extract_custom_html_blocks(html)
-    html = remove_native_beehiiv_leftovers(html)
-    html = strip_beehiiv_footer(html)
-
-    html = re.sub(r"<title>[\s\S]*?</title>", "", html, flags=re.IGNORECASE)
-
-    html = normalize_links(html)
-    html = update_field_notes_date(html, item_date)
-    html = constrain_email_tables(html)
-    html = protect_header_logo(html)
-
-    html = re.sub(r"\n\s*\n\s*\n+", "\n\n", html)
-    html = re.sub(r"<p>\s*</p>", "", html, flags=re.IGNORECASE)
-    html = re.sub(r"<div>\s*</div>", "", html, flags=re.IGNORECASE)
-
-    return html.strip()
-
-
-def main():
-    try:
-        xml = fetch_rss()
-    except (HTTPError, URLError) as e:
-        print(f"Failed to fetch RSS: {e}")
-        return
-
-    body_html, item_date = extract_latest_body_and_date(xml)
-    body_html = clean_html(body_html, item_date)
-
-    full_page = f"""<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <title>Latest Help My Newsletter Edition</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;1,300&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-
 <style>
-  html {{
+  html {
     box-sizing: border-box;
     background: #000000;
-  }}
+  }
 
-  *, *::before, *::after {{
+  *, *::before, *::after {
     box-sizing: inherit;
-  }}
+  }
 
-  body {{
+  body {
     margin: 0;
     padding: 0 0 50px 0;
     background: #000000;
     color: #ffffff;
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  }}
+  }
 
-  .hmn-notice {{
+  .hmn-notice {
     width: calc(100% - 32px);
     max-width: 600px;
     margin: 20px auto 0 auto;
@@ -379,74 +34,58 @@ def main():
     color: #f5f5f5;
     font-size: 15px;
     line-height: 1.5;
-  }}
+  }
 
-  .hmn-notice strong {{
+  .hmn-notice strong {
     color: #ffffff;
-  }}
+  }
 
-  .hmn-notice a {{
+  .hmn-notice a {
     color: #D6B943;
     font-weight: 700;
     text-decoration: none;
-  }}
+  }
 
-  .hmn-notice a:hover {{
-    text-decoration: underline;
-  }}
-
-  .hmn-shell {{
+  .hmn-shell {
     width: calc(100% - 32px);
     max-width: 600px;
     margin: 0 auto;
     padding: 20px 0;
     overflow-x: hidden;
-  }}
+  }
 
-  .hmn-shell *,
-  .hmn-shell *::before,
-  .hmn-shell *::after {{
-    max-width: 100% !important;
-    box-sizing: border-box !important;
-  }}
-
-  .hmn-shell .custom_html,
-  .hmn-shell .custom_html > table,
-  .hmn-shell table {{
+  .hmn-shell table {
     width: 100% !important;
     max-width: 100% !important;
     min-width: 0 !important;
-  }}
+  }
 
-  .hmn-shell td {{
+  .hmn-shell td {
     max-width: 100% !important;
-  }}
+  }
 
-  .hmn-shell img {{
+  .hmn-shell img {
     max-width: 100% !important;
     height: auto !important;
-  }}
+  }
 
-  .hmn-shell img.hmn-header-logo,
-  .hmn-shell img[alt="Help My Newsletter"] {{
+  .hmn-shell img[alt="Help My Newsletter"] {
     width: 56px !important;
     max-width: 56px !important;
     height: 56px !important;
-    max-height: 56px !important;
-    object-fit: contain !important;
     display: block !important;
     margin-left: auto !important;
     margin-right: auto !important;
-  }}
+  }
 
   .hmn-shell iframe,
   .hmn-shell video,
   .hmn-shell embed,
-  .hmn-shell object {{
+  .hmn-shell object {
     max-width: 100% !important;
-  }}
+  }
 
-  .hmn-footer {{
+  .hmn-footer {
     width: calc(100% - 32px);
     max-width: 600px;
     margin: 28px auto 0 auto;
@@ -456,67 +95,53 @@ def main():
     justify-content: space-between;
     align-items: center;
     gap: 20px;
-  }}
+  }
 
-  .hmn-footer a img {{
+  .hmn-footer a img {
     display: block;
     max-height: 64px;
     max-width: 260px;
     width: auto;
     height: auto;
-  }}
+  }
 
-  @media (max-width: 480px) {{
+  @media (max-width: 480px) {
     .hmn-notice,
     .hmn-shell,
-    .hmn-footer {{
+    .hmn-footer {
       width: calc(100% - 24px);
-    }}
+    }
 
-    .hmn-footer {{
+    .hmn-footer {
       flex-direction: column;
       gap: 16px;
-    }}
+    }
 
-    .hmn-footer a img {{
+    .hmn-footer a img {
       max-width: 100%;
-    }}
-  }}
+    }
+  }
 </style>
 </head>
-
 <body>
 
 <div class="hmn-notice">
   <strong>Viewing note:</strong> Some interactive newsletter features are disabled in this web preview, including native polls, referral blocks, ads, and other beehiiv-only elements.
-  <a href="{SUBSCRIBE_URL}" target="_blank" rel="noopener noreferrer">Subscribe here for the full experience.</a>
+  <a href="https://triage.helpmynewsletter.com/subscribe" target="_blank" rel="noopener noreferrer">Subscribe here for the full experience.</a>
 </div>
 
 <div class="hmn-shell">
-  {body_html}
+<table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" bgcolor="#030712" style="background-color:#030712;"><tr><td align="center" style="padding:20px 15px;"><table role="presentation" cellspacing="0" cellpadding="0" border="0" width="600" class="hmn-outer" style="width:600px;max-width:600px;"><table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="#1b1b1b" class="hmn-c" style="width:100%;background-color:#1b1b1b;border:1px solid #222222;border-radius:16px;margin:0 0 10px 0;"><tbody><tr><td style="padding:30px 24px;color:#ffffff;font-family:'IBM Plex Sans',Arial,sans-serif;"><table width="100%" border="0" cellspacing="0" cellpadding="0"><tbody><tr><td align="center" style="text-align:center;padding-bottom:20px;"><img alt="Help My Newsletter" src="https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/bfe49c50-ecc9-4a6a-a583-e6287b7228fe/Untitled__Billboard__Square____4_.png?t=1762889750" width="56" height="56" style="border-radius:999px;background-color:#ffffff;padding:4px;margin:0 auto 10px auto;display:block;;width:56px!important;max-width:56px!important;height:56px!important;"><h1 style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:22px;line-height:28px;letter-spacing:0.1em;text-transform:uppercase;font-weight:600;color:#ffffff;margin:0 0 4px 0;padding:0;">HELP MY NEWSLETTER</h1><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:22px;color:#9ca3af;font-weight:300;margin:0 0 14px 0;padding:0;">Emergency intervention for underperforming newsletters.</p><span style="font-family:'IBM Plex Sans',Arial,sans-serif;display:inline-block;margin:3px;padding:4px 12px;border-radius:4px;font-size:14px;line-height:18px;letter-spacing:0.14em;text-transform:uppercase;font-weight:600;border:1px solid #ff4b72;color:#ffccd6;">Reactivation</span><span style="font-family:'IBM Plex Sans',Arial,sans-serif;display:inline-block;margin:3px;padding:4px 12px;border-radius:4px;font-size:14px;line-height:18px;letter-spacing:0.14em;text-transform:uppercase;font-weight:600;border:1px solid #f5b041;color:#ffeac2;">Consistency</span><span style="font-family:'IBM Plex Sans',Arial,sans-serif;display:inline-block;margin:3px;padding:4px 12px;border-radius:4px;font-size:14px;line-height:18px;letter-spacing:0.14em;text-transform:uppercase;font-weight:600;border:1px solid #00c27a;color:#b9ffe6;">Engagement</span></td></tr></tbody></table><p style="font-family:'IBM Plex Mono','Courier New',monospace;font-size:14px;line-height:14px;letter-spacing:0.2em;text-transform:uppercase;color:#b8ff3c;margin:0 0 8px 0;padding:0;">Field Notes — April 28, 2026</p><h2 style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:22px;line-height:30px;color:#ffffff;font-weight:500;margin:0 0 18px 0;padding:0;">Your subscribers leave after you skip. Data proves it.</h2><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#d1d5db;font-weight:300;margin:0 0 14px 0;padding:0;">You had a plan. Then life happened. Your newsletter schedule slipped. Now you're staring at an underperforming list, wondering how to get back on track. This isn't just about lost momentum; it's about real subscriber loss.</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#d1d5db;font-weight:300;margin:0 0 14px 0;padding:0;">Many independent publishers assume a short break won't hurt much. Or that readers will just pick up where they left off. The data tells a different story entirely. Inactivity erodes trust and visibility.</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#d1d5db;font-weight:300;margin:0 0 14px 0;padding:0;">Email lists face significant churn annually. This isn't just natural decay; it's accelerated by inconsistent publishing. Understanding this cost is the first step to a data-backed recovery strategy.</p><table width="100%" border="0" cellspacing="0" cellpadding="0" style="margin:20px 0;border:1px solid #2a2a2a;border-radius:10px;background-color:#141414;"><tbody><tr><td width="33%" align="center" valign="top" style="text-align:center;padding:18px 8px;vertical-align:top;border-right:1px solid #2a2a2a;"><p style="font-family:'IBM Plex Mono','Courier New',monospace;font-size:30px;line-height:36px;font-weight:600;color:#f5b041;margin:0;padding:0;">25-30%</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:14px;line-height:15px;letter-spacing:0.12em;text-transform:uppercase;color:#9ca3af;margin:5px 0 0 0;padding:0;">annual subscriber<br>churn rate</p></td><td width="33%" align="center" valign="top" style="text-align:center;padding:18px 8px;vertical-align:top;border-right:1px solid #2a2a2a;"><p style="font-family:'IBM Plex Mono','Courier New',monospace;font-size:30px;line-height:36px;font-weight:600;color:#ff4b72;margin:0;padding:0;">71%</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:14px;line-height:15px;letter-spacing:0.12em;text-transform:uppercase;color:#9ca3af;margin:5px 0 0 0;padding:0;">marketers find<br>re-engagement effective</p></td><td width="33%" align="center" valign="top" style="text-align:center;padding:18px 8px;vertical-align:top;"><p style="font-family:'IBM Plex Mono','Courier New',monospace;font-size:30px;line-height:36px;font-weight:600;color:#00c27a;margin:0;padding:0;">14-45%</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:14px;line-height:15px;letter-spacing:0.12em;text-transform:uppercase;color:#9ca3af;margin:5px 0 0 0;padding:0;">open rate<br>boost post-campaign</p></td></tr></tbody></table><table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="#0a1f14" style="background-color:#0a1f14;border-left:3px solid #00c27a;border-radius:6px;margin:0 0 20px 0;"><tbody><tr><td style="padding:14px 18px;"><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:25px;color:#e5e7eb;margin:0;padding:0;"><strong style="color:#00c27a;font-weight:600;">The hard truth about skipping:</strong> Most publishers let their newsletters go cold, then wonder why engagement tanks. The right move is to treat every skip as a critical incident requiring immediate, data-driven recovery.</p></td></tr></tbody></table><table width="100%" border="0" cellspacing="0" cellpadding="0"><tbody><tr><td align="center" style="text-align:center;padding-top:4px;"><a href="#poll" style="font-family:'IBM Plex Sans',Arial,sans-serif;display:inline-block;padding:15px 36px;border-radius:6px;font-size:16px;line-height:20px;font-weight:600;background:linear-gradient(90deg,#ff4b72,#dc2626);color:#ffffff;text-decoration:none;letter-spacing:0.02em;">Start Your Bounce Back Plan ↓</a></td></tr></tbody></table></td></tr></tbody></table><table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="#1b1b1b" class="hmn-c" style="width:100%;background-color:#1b1b1b;border:1px solid #222222;border-radius:16px;margin:0 0 10px 0;"><tbody><tr><td style="padding:30px 24px;color:#ffffff;font-family:'IBM Plex Sans',Arial,sans-serif;"><p style="font-family:'IBM Plex Mono','Courier New',monospace;font-size:14px;line-height:14px;letter-spacing:0.2em;text-transform:uppercase;color:#b8ff3c;margin:0 0 8px 0;padding:0;">Recovery strategy</p><h2 style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:21px;line-height:30px;color:#ffffff;font-weight:500;margin:0 0 18px 0;padding:0;">The silent cost of inconsistency: Why your list engagement flatlines after a publishing gap</h2><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#d1d5db;font-weight:300;margin:0 0 14px 0;padding:0;">An inconsistent sending schedule directly impacts subscriber trust and attention. When your newsletter sporadically appears, readers become confused about what to expect. This uncertainty quickly translates into disengagement, as platforms like Gmail start routing your emails differently.</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#d1d5db;font-weight:300;margin:0 0 14px 0;padding:0;">Beyond individual reader behavior, email platforms penalize inconsistency. If your open rates drop because you've been absent, future emails are more likely to land in spam or promotions tabs. Rebuilding this sender trust demands consistent effort; it's harder to regain than to maintain.</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#d1d5db;font-weight:300;margin:0 0 14px 0;padding:0;">The result is a negative feedback loop: missed sends lead to lower engagement, which leads to worse deliverability, further decreasing engagement. Your authority and visibility diminish, and competitors who maintain consistent contact start to capture your audience's attention.</p><table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="#1f1500" style="background-color:#1f1500;border-left:3px solid #f5b041;border-radius:6px;margin:0 0 20px 0;"><tbody><tr><td style="padding:14px 18px;"><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:25px;color:#e5e7eb;margin:0;padding:0;"><strong style="color:#f5b041;font-weight:600;">The move:</strong> Identify your active subscribers. Segment out those who have gone quiet. Design a specific, value-driven re-engagement campaign instead of a generic 'we're back' email.</p></td></tr></tbody></table><ul style="margin:0;padding:0;list-style:none;"><li style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#d1d5db;font-weight:300;padding:0 0 10px 0;list-style:none;"><span style="color:#b8ff3c;display:inline-block;width:18px;font-weight:600;">•</span>Analyze your list for inactivity patterns</li><li style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#d1d5db;font-weight:300;padding:0 0 10px 0;list-style:none;"><span style="color:#b8ff3c;display:inline-block;width:18px;font-weight:600;">•</span>Segment dormant subscribers based on engagement data</li><li style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#d1d5db;font-weight:300;padding:0 0 10px 0;list-style:none;"><span style="color:#b8ff3c;display:inline-block;width:18px;font-weight:600;">•</span>Craft tailored re-engagement messages</li><li style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#d1d5db;font-weight:300;padding:0 0 10px 0;list-style:none;"><span style="color:#b8ff3c;display:inline-block;width:18px;font-weight:600;">•</span>Establish a new, achievable publishing rhythm</li></ul></td></tr></tbody></table><table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="#0f1115" id="poll" class="hmn-c" style="width:100%;background-color:#0f1115;border:1px solid #1e2530;border-radius:16px;margin:0 0 10px 0;"><tbody><tr><td style="padding:30px 24px;font-family:'IBM Plex Sans',Arial,sans-serif;"><table width="100%" border="0" cellspacing="0" cellpadding="0" style="margin-bottom:22px;"><tbody><tr><td><p style="font-family:'IBM Plex Mono','Courier New',monospace;font-size:14px;line-height:14px;letter-spacing:0.2em;text-transform:uppercase;color:#ff4b72;margin:0 0 10px 0;padding:0;">■ Live diagnostic — click your answer</p><h2 style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:22px;line-height:30px;color:#ffffff;font-weight:600;margin:0 0 8px 0;padding:0;">How prepared are you for a newsletter bounce-back after a skip?</h2><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:14px;line-height:22px;color:#9ca3af;font-weight:300;margin:0;padding:0;">Your honest assessment helps identify the fastest path to recovery.</p></td></tr></tbody></table><table width="100%" border="0" cellspacing="0" cellpadding="0" style="margin-bottom:10px;"><tbody><tr><td><a href="https://triage.helpmynewsletter.com/big-list-energy?catid=mon-poll-active" style="text-decoration:none;display:block;"><table width="100%" border="0" cellspacing="0" cellpadding="0" bgcolor="#001f0a" style="background-color:#001f0a;border:1px solid #00c27a;border-radius:8px;"><tbody><tr><td width="48" style="padding:16px 0 16px 18px;vertical-align:middle;width:48px;"><span style="font-family:'IBM Plex Mono','Courier New',monospace;font-size:14px;font-weight:600;color:#00c27a;letter-spacing:0.08em;">A</span></td><td style="padding:16px 18px 16px 4px;vertical-align:middle;"><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:22px;font-weight:500;color:#ffffff;margin:0;padding:0;">I have a clear re-engagement plan.</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:14px;line-height:18px;font-weight:300;color:#3d7a5e;margin:4px 0 0 0;padding:0;">You're ahead of the curve. Focus on optimizing your re-engagement sequences and consistent delivery.</p></td><td width="32" style="padding:16px 18px 16px 0;vertical-align:middle;text-align:right;width:32px;"><span style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:18px;color:#00c27a;">→</span></td></tr></tbody></table></a></td></tr></tbody></table><table width="100%" border="0" cellspacing="0" cellpadding="0" style="margin-bottom:10px;"><tbody><tr><td><a href="https://triage.helpmynewsletter.com/big-list-energy?catid=mon-poll-stalled" style="text-decoration:none;display:block;"><table width="100%" border="0" cellspacing="0" cellpadding="0" bgcolor="#1a1200" style="background-color:#1a1200;border:1px solid #f5b041;border-radius:8px;"><tbody><tr><td width="48" style="padding:16px 0 16px 18px;vertical-align:middle;width:48px;"><span style="font-family:'IBM Plex Mono','Courier New',monospace;font-size:14px;font-weight:600;color:#f5b041;letter-spacing:0.08em;">B</span></td><td style="padding:16px 18px 16px 4px;vertical-align:middle;"><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:22px;font-weight:500;color:#ffffff;margin:0;padding:0;">I've tried, but engagement is still low.</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:14px;line-height:18px;font-weight:300;color:#9e8a5a;margin:4px 0 0 0;padding:0;">This indicates a gap in strategy or execution. A focused diagnostic can pinpoint the real problem.</p></td><td width="32" style="padding:16px 18px 16px 0;vertical-align:middle;text-align:right;width:32px;"><span style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:18px;color:#f5b041;">→</span></td></tr></tbody></table></a></td></tr></tbody></table><table width="100%" border="0" cellspacing="0" cellpadding="0" style="margin-bottom:10px;"><tbody><tr><td><a href="https://triage.helpmynewsletter.com/big-list-energy?catid=mon-poll-notstarted" style="text-decoration:none;display:block;"><table width="100%" border="0" cellspacing="0" cellpadding="0" bgcolor="#1a0008" style="background-color:#1a0008;border:1px solid #ff4b72;border-radius:8px;"><tbody><tr><td width="48" style="padding:16px 0 16px 18px;vertical-align:middle;width:48px;"><span style="font-family:'IBM Plex Mono','Courier New',monospace;font-size:14px;font-weight:600;color:#ff4b72;letter-spacing:0.08em;">C</span></td><td style="padding:16px 18px 16px 4px;vertical-align:middle;"><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:22px;font-weight:500;color:#ffffff;margin:0;padding:0;">I wouldn't know where to begin.</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:14px;line-height:18px;font-weight:300;color:#9e5566;margin:4px 0 0 0;padding:0;">That's common. Start with a simple audit to understand your current state and map out initial steps.</p></td><td width="32" style="padding:16px 18px 16px 0;vertical-align:middle;text-align:right;width:32px;"><span style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:18px;color:#ff4b72;">→</span></td></tr></tbody></table></a></td></tr></tbody></table><table width="100%" border="0" cellspacing="0" cellpadding="0" style="margin-bottom:20px;"><tbody><tr><td><a href="https://triage.helpmynewsletter.com/big-list-energy?catid=mon-poll-notyet" style="text-decoration:none;display:block;"><table width="100%" border="0" cellspacing="0" cellpadding="0" bgcolor="#111520" style="background-color:#111520;border:1px solid #374151;border-radius:8px;"><tbody><tr><td width="48" style="padding:16px 0 16px 18px;vertical-align:middle;width:48px;"><span style="font-family:'IBM Plex Mono','Courier New',monospace;font-size:14px;font-weight:600;color:#374151;letter-spacing:0.08em;">D</span></td><td style="padding:16px 18px 16px 4px;vertical-align:middle;"><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:22px;font-weight:500;color:#ffffff;margin:0;padding:0;">This isn't relevant to my current list.</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:14px;line-height:18px;font-weight:300;color:#b8ff3c;margin:4px 0 0 0;padding:0;">Every publisher will skip an edition at some point. Proactive planning is always cheaper than reactive fixing.</p></td><td width="32" style="padding:16px 18px 16px 0;vertical-align:middle;text-align:right;width:32px;"><span style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:18px;color:#b8ff3c;">→</span></td></tr></tbody></table></a></td></tr></tbody></table><p style="font-family:'IBM Plex Mono','Courier New',monospace;font-size:14px;line-height:16px;letter-spacing:0.12em;text-transform:uppercase;color:#b8ff3c;text-align:center;margin:0;padding:0;">Each answer routes to triage.helpmynewsletter.com — results tracked by click</p></td></tr></tbody></table><table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="#1b1b1b" class="hmn-c" style="width:100%;background-color:#1b1b1b;border:1px solid #222222;border-radius:16px;margin:0 0 10px 0;"><tbody><tr><td style="padding:30px 24px;color:#ffffff;font-family:'IBM Plex Sans',Arial,sans-serif;"><p style="font-family:'IBM Plex Mono','Courier New',monospace;font-size:14px;line-height:14px;letter-spacing:0.2em;text-transform:uppercase;color:#b8ff3c;margin:0 0 8px 0;padding:0;">The reset</p><h2 style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:21px;line-height:30px;color:#ffffff;font-weight:500;margin:0 0 6px 0;padding:0;">3 steps to bounce back. In this order.</h2><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:14px;line-height:22px;color:#9ca3af;font-weight:300;margin:0 0 20px 0;padding:0;">Skipping steps here means you're throwing good effort after bad. You have to diagnose before you prescribe. Don't waste energy on the wrong fix.</p><div style="height:1px;background:linear-gradient(90deg,rgba(255,255,255,0.04),rgba(255,255,255,0.14),rgba(255,255,255,0.04));margin:0 0 22px 0;"></div><p style="font-family:'IBM Plex Mono','Courier New',monospace;font-size:14px;line-height:14px;letter-spacing:0.2em;text-transform:uppercase;color:#ffccd6;margin:0 0 8px 0;padding:0;">01 — Diagnose</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#d1d5db;font-weight:300;margin:0 0 24px 0;padding:0;"><strong style="color:#ffffff;font-weight:500;">Start with a health audit.</strong> Understand exactly what broke. Was it open rates, click-throughs, or deliverability? Identify the specific metrics that tanked after your skip. Use a tool like the <a href="https://triage.helpmynewsletter.com/5-minute-diy-newsletter-audit" style="color:#ff4b72;text-decoration:underline;">5-Minute Newsletter Health Audit</a>.</p><div style="height:1px;background:linear-gradient(90deg,rgba(255,255,255,0.04),rgba(255,255,255,0.14),rgba(255,255,255,0.04));margin:0 0 22px 0;"></div><p style="font-family:'IBM Plex Mono','Courier New',monospace;font-size:14px;line-height:14px;letter-spacing:0.2em;text-transform:uppercase;color:#ffeac2;margin:0 0 8px 0;padding:0;">02 — Segment</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#d1d5db;font-weight:300;margin:0 0 24px 0;padding:0;"><strong style="color:#ffffff;font-weight:500;">Divide your list.</strong> Separate truly inactive subscribers from those who are still engaged but perhaps less frequent. Tailoring your re-engagement messages is key to not alienating your core audience.</p><div style="height:1px;background:linear-gradient(90deg,rgba(255,255,255,0.04),rgba(255,255,255,0.14),rgba(255,255,255,0.04));margin:0 0 22px 0;"></div><p style="font-family:'IBM Plex Mono','Courier New',monospace;font-size:14px;line-height:14px;letter-spacing:0.2em;text-transform:uppercase;color:#b9ffe6;margin:0 0 8px 0;padding:0;">03 — Re-engage</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#d1d5db;font-weight:300;margin:0 0 24px 0;padding:0;"><strong style="color:#ffffff;font-weight:500;">Launch a targeted campaign.</strong> Don't just resume regular sending. Send a series of emails specifically designed to win back inactive subscribers, focusing on value and setting new expectations for consistency.</p><div style="height:1px;background:linear-gradient(90deg,rgba(255,255,255,0.04),rgba(255,255,255,0.14),rgba(255,255,255,0.04));margin:0 0 22px 0;"></div><p style="font-family:'IBM Plex Mono','Courier New',monospace;font-size:14px;line-height:14px;letter-spacing:0.2em;text-transform:uppercase;color:#b0f4ff;margin:0 0 8px 0;padding:0;">04 — Commit</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#d1d5db;font-weight:300;margin:0 0 4px 0;padding:0;"><strong style="color:#ffffff;font-weight:500;">Set a sustainable rhythm.</strong> The fastest way to lose momentum again is to overpromise and underdeliver. Choose a frequency you can realistically maintain, even when things get busy. Consistency is critical for long-term recovery.</p></td></tr></tbody></table><table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="#1b1b1b" class="hmn-c" style="width:100%;background-color:#1b1b1b;border:1px solid #222222;border-radius:16px;margin:0 0 10px 0;"><tbody><tr><td style="padding:30px 24px;color:#ffffff;font-family:'IBM Plex Sans',Arial,sans-serif;"><p style="font-family:'IBM Plex Mono','Courier New',monospace;font-size:14px;line-height:14px;letter-spacing:0.2em;text-transform:uppercase;color:#b8ff3c;margin:0 0 8px 0;padding:0;">Tool drop</p><h2 style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:21px;line-height:30px;color:#ffffff;font-weight:500;margin:0 0 20px 0;padding:0;">Fix your skip fallout and rebuild engagement</h2><table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="#1a0008" style="background-color:#1a0008;border:1px solid #ff4b72;border-radius:10px;margin:0 0 14px 0;"><tbody><tr><td style="padding:22px 24px;"><p style="font-family:'IBM Plex Mono','Courier New',monospace;font-size:14px;line-height:14px;letter-spacing:0.2em;text-transform:uppercase;color:#ff4b72;margin:0 0 10px 0;padding:0;">5-Minute Newsletter Health Audit</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:26px;color:#e5e7eb;font-weight:300;margin:0 0 8px 0;padding:0;">This quick self-directed audit helps you pinpoint the exact issues hurting your newsletter's performance after a skip. It reveals the biggest problems affecting deliverability and engagement.</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:14px;line-height:22px;color:#9e5566;font-weight:300;margin:0 0 18px 0;padding:0;">Use this first to understand the specific damage from your publishing gap.</p><a href="https://triage.helpmynewsletter.com/5-minute-diy-newsletter-audit" style="font-family:'IBM Plex Sans',Arial,sans-serif;display:inline-block;padding:13px 28px;border-radius:6px;font-size:15px;line-height:20px;font-weight:600;background:linear-gradient(90deg,#ff4b72,#dc2626);color:#ffffff;text-decoration:none;letter-spacing:0.02em;">Use This Tool →</a></td></tr></tbody></table><table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="#001f0a" style="background-color:#001f0a;border:1px solid #00c27a;border-radius:10px;margin:0 0 14px 0;"><tbody><tr><td style="padding:22px 24px;"><p style="font-family:'IBM Plex Mono','Courier New',monospace;font-size:14px;line-height:14px;letter-spacing:0.2em;text-transform:uppercase;color:#00c27a;margin:0 0 10px 0;padding:0;">Newsletter Emergency Services</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:26px;color:#e5e7eb;font-weight:300;margin:0 0 8px 0;padding:0;">When your newsletter is in crisis after a period of inactivity, this tool helps you build a full triage and treatment plan. It guides you through the steps to stabilize and recover.</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:14px;line-height:22px;color:#3d7a5e;font-weight:300;margin:0 0 18px 0;padding:0;">After diagnosis, use this to construct a comprehensive recovery plan for your underperforming newsletter.</p><a href="https://triage.helpmynewsletter.com/build-your-treatment-plan" style="font-family:'IBM Plex Sans',Arial,sans-serif;display:inline-block;padding:13px 28px;border-radius:6px;font-size:15px;line-height:20px;font-weight:600;background:linear-gradient(90deg,#00c27a,#059669);color:#ffffff;text-decoration:none;letter-spacing:0.02em;">Use This Tool →</a></td></tr></tbody></table><table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="#001a1f" style="background-color:#001a1f;border-left:3px solid #00e5ff;border-radius:6px;margin:0 0 20px 0;"><tbody><tr><td style="padding:14px 18px;"><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:25px;color:#e5e7eb;margin:0;padding:0;"><strong style="color:#00e5ff;font-weight:600;">Run both before you attempt a generic 'we're back' email.</strong> A generic 'we're back' email will fail. You need to understand the damage and build a specific recovery plan. These tools will give you the data and framework to execute a real bounce-back strategy.</p></td></tr></tbody></table></td></tr></tbody></table><table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="#1b1b1b" class="hmn-c" style="width:100%;background-color:#1b1b1b;border:1px solid #222222;border-radius:16px;margin:0 0 10px 0;"><tbody><tr><td style="padding:30px 24px;color:#ffffff;font-family:'IBM Plex Sans',Arial,sans-serif;"><p style="font-family:'IBM Plex Mono','Courier New',monospace;font-size:14px;line-height:14px;letter-spacing:0.2em;text-transform:uppercase;color:#b8ff3c;margin:0 0 8px 0;padding:0;">Fast blueprint</p><h2 style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:21px;line-height:30px;color:#ffffff;font-weight:500;margin:0 0 20px 0;padding:0;">What to do this week if you're trying to bounce back from a skipped edition</h2><ul style="margin:0;padding:0;list-style:none;"><li style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#d1d5db;font-weight:300;padding:0 0 12px 0;list-style:none;border-bottom:1px solid #222222;margin-bottom:12px;"><span style="color:#b8ff3c;display:inline-block;width:18px;font-weight:600;">•</span><strong style="color:#ffffff;font-weight:500;">Today:</strong> Pull your newsletter engagement data from before and after your skipped edition(s).</li><li style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#d1d5db;font-weight:300;padding:0 0 12px 0;list-style:none;border-bottom:1px solid #222222;margin-bottom:12px;"><span style="color:#b8ff3c;display:inline-block;width:18px;font-weight:600;">•</span><strong style="color:#ffffff;font-weight:500;">Tuesday:</strong> Identify the key metrics that dropped (open rate, CTR, deliverability) and by how much.</li><li style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#d1d5db;font-weight:300;padding:0 0 12px 0;list-style:none;border-bottom:1px solid #222222;margin-bottom:12px;"><span style="color:#b8ff3c;display:inline-block;width:18px;font-weight:600;">•</span><strong style="color:#ffffff;font-weight:500;">Wednesday:</strong> Segment your list: active, low-engagement, and truly dormant subscribers.</li><li style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#d1d5db;font-weight:300;padding:0 0 12px 0;list-style:none;border-bottom:1px solid #222222;margin-bottom:12px;"><span style="color:#b8ff3c;display:inline-block;width:18px;font-weight:600;">•</span><strong style="color:#ffffff;font-weight:500;">Thursday:</strong> Draft a re-engagement email tailored to your low-engagement segment, offering clear value.</li><li style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#d1d5db;font-weight:300;padding:0 0 12px 0;list-style:none;"><span style="color:#b8ff3c;display:inline-block;width:18px;font-weight:600;">•</span><strong style="color:#ffffff;font-weight:500;">Friday:</strong> Schedule a regular, achievable publishing cadence you can commit to for the next 90 days.</li></ul><div style="margin-top:22px;"><table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="#001a1f" style="background-color:#001a1f;border-left:3px solid #00e5ff;border-radius:6px;margin:0 0 20px 0;"><tbody><tr><td style="padding:14px 18px;"><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:25px;color:#e5e7eb;margin:0;padding:0;"><strong style="color:#00e5ff;font-weight:600;">Angles / subject lines for re-engagement that don't read like templates:</strong> Did We Lose You? Here's What You Missed. | Your Inbox Just Got an Upgrade. (Finally.) | We're Back. Better Than Ever. (Seriously.)</p></td></tr></tbody></table></div></td></tr></tbody></table><table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="#1b1b1b" class="hmn-c" style="width:100%;background-color:#1b1b1b;border:1px solid #222222;border-radius:16px 16px 0 0;margin:0;"><tbody><tr><td style="padding:30px 24px;color:#ffffff;font-family:'IBM Plex Sans',Arial,sans-serif;"><p style="font-family:'IBM Plex Mono','Courier New',monospace;font-size:14px;line-height:14px;letter-spacing:0.2em;text-transform:uppercase;color:#b8ff3c;margin:0 0 8px 0;padding:0;">Closing shot</p><h2 style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:21px;line-height:30px;color:#ffffff;font-weight:500;margin:0 0 18px 0;padding:0;">Consistency isn't a suggestion. It's the engine.</h2><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#d1d5db;font-weight:300;margin:0 0 14px 0;padding:0;">Many publishers view consistency as an ideal. The reality is, it's a non-negotiable for sustained engagement and growth. Every skipped edition has a measurable cost, not just in lost opportunity, but in actual subscriber churn and diminished trust.</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#d1d5db;font-weight:300;margin:0 0 14px 0;padding:0;">If your newsletter has gone quiet, the clock is ticking. You can't simply restart and expect previous performance. You must actively re-engage, diagnose issues, and rebuild the habit with your audience.</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#d1d5db;font-weight:300;margin:0 0 14px 0;padding:0;">Stop letting inconsistency undermine your efforts. Commit to a data-backed bounce back. Your list is waiting for a clear signal you're serious.</p><table border="0" cellpadding="0" cellspacing="0" width="100%" bgcolor="#2a0a12" style="background-color:#2a0a12;border:1px solid #ff4b72;border-radius:10px;margin:0 0 24px 0;"><tbody><tr><td style="padding:24px;text-align:center;"><p style="font-family:'IBM Plex Mono','Courier New',monospace;font-size:14px;line-height:14px;text-transform:uppercase;letter-spacing:0.2em;color:#ff4b72;margin:0 0 10px 0;padding:0;">Not sure where to start?</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:26px;color:#e5e7eb;font-weight:300;margin:0 0 20px 0;padding:0;">Book a triage session with Jenn. We'll diagnose your newsletter's post-skip health, identify critical fixes, and build your personalized recovery plan to regain momentum fast. https://calendar.app.google/XVrUdL3FD4tfBRhs5</p><a href="https://calendar.app.google/XVrUdL3FD4tfBRhs5" style="font-family:'IBM Plex Sans',Arial,sans-serif;display:inline-block;padding:15px 36px;border-radius:6px;font-size:16px;line-height:20px;font-weight:600;background:linear-gradient(90deg,#ff4b72,#dc2626);color:#ffffff;text-decoration:none;letter-spacing:0.02em;">Book a Triage Session →</a></td></tr></tbody></table><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:27px;color:#9ca3af;font-weight:300;margin:0 0 4px 0;padding:0;">Talk soon,</p><p style="font-family:'IBM Plex Sans',Arial,sans-serif;font-size:16px;line-height:24px;color:#ffffff;font-weight:500;margin:0;padding:0;">Jenn<br><span style="color:#9ca3af;font-weight:300;font-size:15px;">Help My Newsletter // Opt-In Architects</span></p></td></tr></tbody></table></table></td></tr></table>
 </div>
 
 <div class="hmn-footer">
-  <a href="{BEEHIIV_AFFILIATE_URL}" target="_blank" rel="noopener noreferrer">
-    <img
-      src="https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/de8db07f-5edf-4790-be80-2c28563eede9/Add_a_subheading.png?t=1763656347"
-      alt="Start your newsletter on beehiiv">
+  <a href="https://www.beehiiv.com/?via=JenniferGibbs1" target="_blank" rel="noopener noreferrer">
+    <img src="https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/de8db07f-5edf-4790-be80-2c28563eede9/Add_a_subheading.png?t=1763656347" alt="Start your newsletter on beehiiv">
   </a>
-
-  <a href="{BOOKING_URL}" target="_blank" rel="noopener noreferrer">
-    <img
-      src="https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/f5603471-e469-4bfe-94a6-dd08601cbbd5/Add_a_subheading__1_.png?t=1763656403"
-      alt="Book a newsletter consult">
+  <a href="https://calendar.app.google/6E3acH7JZZVMDgLaA" target="_blank" rel="noopener noreferrer">
+    <img src="https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/f5603471-e469-4bfe-94a6-dd08601cbbd5/Add_a_subheading__1_.png?t=1763656403" alt="Book a newsletter consult">
   </a>
 </div>
 
 </body>
 </html>
-"""
-
-    with open("index.html", "w", encoding="utf-8") as f:
-        f.write(full_page)
-
-
-if __name__ == "__main__":
-    main()
