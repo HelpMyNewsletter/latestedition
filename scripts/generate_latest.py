@@ -1,4 +1,5 @@
 import re
+from email.utils import parsedate_to_datetime
 from urllib.request import urlopen, Request
 from urllib.error import HTTPError, URLError
 
@@ -16,47 +17,109 @@ def fetch_rss() -> str:
             "Chrome/120.0 Safari/537.36"
         )
     }
+
     req = Request(RSS_URL, headers=headers)
+
     with urlopen(req, timeout=20) as resp:
         return resp.read().decode("utf-8", errors="replace")
 
 
+def get_tag_value(item_html: str, tag_name: str) -> str:
+    match = re.search(
+        rf"<{tag_name}[^>]*>([\s\S]*?)</{tag_name}>",
+        item_html,
+        flags=re.IGNORECASE,
+    )
+
+    if not match:
+        return ""
+
+    value = match.group(1).strip()
+    value = re.sub(r"^<!\[CDATA\[", "", value)
+    value = re.sub(r"\]\]>$", "", value)
+
+    return value.strip()
+
+
+def get_item_date(item_html: str):
+    date_text = (
+        get_tag_value(item_html, "pubDate")
+        or get_tag_value(item_html, "atom:published")
+        or get_tag_value(item_html, "atom:updated")
+    )
+
+    if not date_text:
+        return None
+
+    try:
+        return parsedate_to_datetime(date_text)
+    except Exception:
+        return None
+
+
+def extract_items(xml: str) -> list[str]:
+    return re.findall(r"<item[\s\S]*?</item>", xml, flags=re.IGNORECASE)
+
+
+def extract_latest_item(xml: str) -> str:
+    items = extract_items(xml)
+
+    if not items:
+        return xml
+
+    dated_items = []
+
+    for item in items:
+        item_date = get_item_date(item)
+        if item_date:
+            dated_items.append((item_date, item))
+
+    if dated_items:
+        dated_items.sort(key=lambda pair: pair[0], reverse=True)
+        return dated_items[0][1]
+
+    return items[0]
+
+
 def extract_latest_body(xml: str) -> str:
-    item_match = re.search(r"<item[\s\S]*?</item>", xml, flags=re.IGNORECASE)
-    search_area = item_match.group(0) if item_match else xml
+    latest_item = extract_latest_item(xml)
 
     content_match = re.search(
-        r"<content:encoded><!\[CDATA\[(.*?)\]\]></content:encoded>",
-        search_area,
-        flags=re.IGNORECASE | re.DOTALL,
+        r"<content:encoded><!\[CDATA\[([\s\S]*?)\]\]></content:encoded>",
+        latest_item,
+        flags=re.IGNORECASE,
     )
 
     if content_match:
         return content_match.group(1)
 
     desc_match = re.search(
-        r"<description><!\[CDATA\[(.*?)\]\]></description>",
-        search_area,
-        flags=re.IGNORECASE | re.DOTALL,
+        r"<description><!\[CDATA\[([\s\S]*?)\]\]></description>",
+        latest_item,
+        flags=re.IGNORECASE,
     )
 
-    return desc_match.group(1) if desc_match else "<p>No content found.</p>"
+    if desc_match:
+        return desc_match.group(1)
+
+    return "<p>No content found.</p>"
 
 
 def extract_custom_html_blocks(html: str) -> str:
     """
     Keep only beehiiv custom_html blocks.
-    This removes native ads, referral blocks, polls, boosts, recommendations,
-    and any future beehiiv-native section blocks inserted between custom HTML.
+
+    This removes beehiiv-native insertions such as:
+    ads, referral blocks, boosts, recommendations, polls, and generic
+    beehiiv sections injected between custom HTML blocks.
     """
 
     blocks = []
-    lower_html = html.lower()
     search_pos = 0
 
     while True:
         start_match = re.search(
-            r'''<div[^>]*class=["']custom_html["'][^>]*>''',
+            r'''<div[^>]*class=["'][^"']*\bcustom_html\b[^"']*["'][^>]*>''',
             html[search_pos:],
             flags=re.IGNORECASE,
         )
@@ -73,8 +136,10 @@ def extract_custom_html_blocks(html: str) -> str:
             if html[i:i + 4].lower() == "<div":
                 depth += 1
                 close_bracket = html.find(">", i)
+
                 if close_bracket == -1:
                     break
+
                 i = close_bracket + 1
 
             elif html[i:i + 6].lower() == "</div>":
@@ -91,8 +156,7 @@ def extract_custom_html_blocks(html: str) -> str:
         if end_pos is None:
             break
 
-        block = html[start_pos:end_pos]
-        blocks.append(block)
+        blocks.append(html[start_pos:end_pos])
         search_pos = end_pos
 
     if blocks:
@@ -123,11 +187,92 @@ def strip_beehiiv_footer(html: str) -> str:
     return html
 
 
+def remove_native_beehiiv_leftovers(html: str) -> str:
+    ad_markers = [
+        "utm_source=beehiivads",
+        "_bhiiv=opp_",
+        "bhcl_id=",
+        "turn-ai-into-extra-income",
+        "mindstream.news",
+    ]
+
+    for marker in ad_markers:
+        while marker.lower() in html.lower():
+            lower_html = html.lower()
+            marker_pos = lower_html.find(marker.lower())
+
+            section_start = lower_html.rfind("<div", 0, marker_pos)
+            section_end = lower_html.find("</div>", marker_pos)
+
+            if section_start == -1 or section_end == -1:
+                break
+
+            html = html[:section_start] + html[section_end + 6:]
+
+    return html
+
+
+def constrain_email_tables(html: str) -> str:
+    """
+    Make inherited email tables behave inside the web preview frame.
+    """
+
+    html = re.sub(
+        r'width=["\']600["\']',
+        'width="100%"',
+        html,
+        flags=re.IGNORECASE,
+    )
+
+    html = re.sub(
+        r"width:600px;max-width:600px;",
+        "width:100%;max-width:100%;",
+        html,
+        flags=re.IGNORECASE,
+    )
+
+    html = re.sub(
+        r"width:\s*600px",
+        "width:100%",
+        html,
+        flags=re.IGNORECASE,
+    )
+
+    html = re.sub(
+        r"max-width:\s*600px",
+        "max-width:100%",
+        html,
+        flags=re.IGNORECASE,
+    )
+
+    return html
+
+
+def protect_header_logo(html: str) -> str:
+    """
+    Keep the main Help My Newsletter logo small.
+    """
+
+    html = re.sub(
+        r'(<img[^>]+alt=["\']Help My Newsletter["\'][^>]*)(>)',
+        r'\1 class="hmn-header-logo"\2',
+        html,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+
+    return html
+
+
 def clean_html(html: str) -> str:
     html = extract_custom_html_blocks(html)
+    html = remove_native_beehiiv_leftovers(html)
     html = strip_beehiiv_footer(html)
 
     html = re.sub(r"<title>[\s\S]*?</title>", "", html, flags=re.IGNORECASE)
+    html = constrain_email_tables(html)
+    html = protect_header_logo(html)
+
     html = re.sub(r"\n\s*\n\s*\n+", "\n\n", html)
     html = re.sub(r"<p>\s*</p>", "", html, flags=re.IGNORECASE)
     html = re.sub(r"<div>\s*</div>", "", html, flags=re.IGNORECASE)
@@ -153,6 +298,10 @@ def main():
 <meta name="viewport" content="width=device-width, initial-scale=1">
 
 <style>
+  *, *::before, *::after {{
+    box-sizing: border-box;
+  }}
+
   body {{
     margin: 0;
     padding: 0 0 50px 0;
@@ -162,7 +311,7 @@ def main():
   }}
 
   .hmn-notice {{
-    max-width: 600px;
+    width: min(600px, calc(100% - 32px));
     margin: 20px auto 0 auto;
     padding: 16px 18px;
     background: #151515;
@@ -171,7 +320,6 @@ def main():
     color: #f5f5f5;
     font-size: 15px;
     line-height: 1.5;
-    box-sizing: border-box;
   }}
 
   .hmn-notice strong {{
@@ -184,22 +332,40 @@ def main():
     text-decoration: none;
   }}
 
+  .hmn-notice a:hover {{
+    text-decoration: underline;
+  }}
+
   .hmn-shell {{
-    max-width: 600px;
+    width: min(600px, calc(100% - 32px));
     margin: 0 auto;
-    padding: 20px;
-    box-sizing: border-box;
+    padding: 20px 0;
     overflow-x: hidden;
+  }}
+
+  .hmn-shell .custom_html,
+  .hmn-shell .custom_html > table,
+  .hmn-shell table {{
+    width: 100% !important;
+    max-width: 100% !important;
+  }}
+
+  .hmn-shell td {{
+    max-width: 100% !important;
   }}
 
   .hmn-shell img {{
     max-width: 100% !important;
-    width: auto !important;
     height: auto !important;
   }}
 
-  .hmn-shell table {{
-    max-width: 100% !important;
+  .hmn-shell img.hmn-header-logo,
+  .hmn-shell img[alt="Help My Newsletter"] {{
+    width: 56px !important;
+    max-width: 56px !important;
+    height: 56px !important;
+    max-height: 56px !important;
+    object-fit: contain !important;
   }}
 
   .hmn-shell iframe,
@@ -210,14 +376,14 @@ def main():
   }}
 
   .hmn-footer {{
-    max-width: 600px;
+    width: min(600px, calc(100% - 32px));
     margin: 28px auto 0 auto;
-    padding: 12px 20px;
+    padding: 12px 0;
     border-top: 1px solid #333333;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    box-sizing: border-box;
+    gap: 16px;
   }}
 
   .hmn-footer a img {{
