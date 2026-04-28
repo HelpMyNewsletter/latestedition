@@ -16,9 +16,7 @@ def fetch_rss() -> str:
             "Chrome/120.0 Safari/537.36"
         )
     }
-
     req = Request(RSS_URL, headers=headers)
-
     with urlopen(req, timeout=20) as resp:
         return resp.read().decode("utf-8", errors="replace")
 
@@ -42,97 +40,33 @@ def extract_latest_body(xml: str) -> str:
         flags=re.IGNORECASE | re.DOTALL,
     )
 
-    if desc_match:
-        return desc_match.group(1)
-
-    return "<p>No content found.</p>"
+    return desc_match.group(1) if desc_match else "<p>No content found.</p>"
 
 
-def remove_polls(html: str) -> str:
-    patterns = [
-        r'''<beehiiv-poll[\s\S]*?</beehiiv-poll>''',
-        r'''<div[^>]*data-poll-id[^>]*>[\s\S]*?</div>''',
-        r'''<div[^>]*class=["'][^"']*bh-poll[^"']*["'][^>]*>[\s\S]*?</div>''',
-        r'''<script[^>]*poll\.beehiiv\.com[^>]*>[\s\S]*?</script>''',
-        r'''<script[^>]*poll\.beehiiv\.com[^>]*/>''',
-    ]
+def extract_custom_html_blocks(html: str) -> str:
+    """
+    Keep only beehiiv custom_html blocks.
+    This removes native ads, referral blocks, polls, boosts, recommendations,
+    and any future beehiiv-native section blocks inserted between custom HTML.
+    """
 
-    for pattern in patterns:
-        html = re.sub(pattern, "", html, flags=re.IGNORECASE)
+    blocks = []
+    lower_html = html.lower()
+    search_pos = 0
 
-    return html
+    while True:
+        start_match = re.search(
+            r'''<div[^>]*class=["']custom_html["'][^>]*>''',
+            html[search_pos:],
+            flags=re.IGNORECASE,
+        )
 
-
-def remove_native_ads(html: str) -> str:
-    patterns = [
-        # Custom beehiiv ad elements
-        r'''<beehiiv-ad[\s\S]*?</beehiiv-ad>''',
-        r'''<beehiiv-ad[^>]*/>''',
-
-        # Data attribute ad markers
-        r'''<(?:div|section|aside|article)[^>]*data-sponsorship[^>]*>[\s\S]*?</(?:div|section|aside|article)>''',
-        r'''<(?:div|section|aside|article)[^>]*data-ad-[^>]*>[\s\S]*?</(?:div|section|aside|article)>''',
-        r'''<(?:div|section|aside|article)[^>]*data-boost[^>]*>[\s\S]*?</(?:div|section|aside|article)>''',
-
-        # Class/id based native blocks
-        r'''<(?:div|section|aside|article)[^>]*(class|id)=["'][^"']*(bh-ad|beehiiv-ad|native-ad|ad-wrapper|beehiiv-boost|sponsored)[^"']*["'][^>]*>[\s\S]*?</(?:div|section|aside|article)>''',
-
-        # External beehiiv ad/boost loaders
-        r'''<script[^>]*ads\.beehiiv\.com[^>]*>[\s\S]*?</script>''',
-        r'''<script[^>]*ads\.beehiiv\.com[^>]*/>''',
-        r'''<script[^>]*boosts\.beehiiv\.com[^>]*>[\s\S]*?</script>''',
-        r'''<script[^>]*boosts\.beehiiv\.com[^>]*/>''',
-
-        # Beehiiv redirect links
-        r'''<a[^>]*href=["']https://(?:track\.)?beehiiv\.com/[^"']*(?:ad|boost|sponsor)[^"']*["'][^>]*>[\s\S]*?</a>''',
-    ]
-
-    for pattern in patterns:
-        html = re.sub(pattern, "", html, flags=re.IGNORECASE)
-
-    return html
-
-
-def remove_section_ads(html: str) -> str:
-    ad_markers = [
-        "utm_source=beehiivads",
-        "_bhiiv=opp_",
-        "bhcl_id=",
-        "turn-ai-into-extra-income",
-        "mindstream.news",
-    ]
-
-    section_open = re.compile(
-        r'''<div[^>]*class=["'][^"']*\bsection\b[^"']*["'][^>]*>''',
-        re.IGNORECASE,
-    )
-
-    changed = True
-
-    while changed:
-        changed = False
-        lower_html = html.lower()
-
-        marker_pos = -1
-
-        for marker in ad_markers:
-            marker_pos = lower_html.find(marker.lower())
-            if marker_pos != -1:
-                break
-
-        if marker_pos == -1:
+        if not start_match:
             break
 
-        preceding_html = html[:marker_pos]
-        section_matches = list(section_open.finditer(preceding_html))
-
-        if not section_matches:
-            break
-
-        start_pos = section_matches[-1].start()
-
-        depth = 0
+        start_pos = search_pos + start_match.start()
         i = start_pos
+        depth = 0
         end_pos = None
 
         while i < len(html):
@@ -157,27 +91,12 @@ def remove_section_ads(html: str) -> str:
         if end_pos is None:
             break
 
-        html = html[:start_pos] + html[end_pos:]
-        changed = True
+        block = html[start_pos:end_pos]
+        blocks.append(block)
+        search_pos = end_pos
 
-    return html
-
-
-def remove_common_native_blocks(html: str) -> str:
-    patterns = [
-        # Do not include "beehiiv" here, because the whole RSS body is wrapped in class='beehiiv'
-        r'''<div[^>]*(class|id)=["'][^"']*(bh-|poll|referral|recommendation|boost|advertisement|sponsor|survey|subscribe|comment)[^"']*["'][^>]*>[\s\S]*?</div>''',
-
-        # Beehiiv referral/recommendation/boost links
-        r'''<a[^>]*href=["'][^"']*beehiiv\.com[^"']*(referral|recommend|boost|subscribe|poll|survey)[^"']*["'][^>]*>[\s\S]*?</a>''',
-
-        # Common native copy blocks
-        r'''<p[^>]*>[\s\S]*?(Share this newsletter|Refer a friend|Subscribe to keep reading|Leave a comment|Take the poll|Vote in the poll|Sponsored by|Advertisement)[\s\S]*?</p>''',
-        r'''<div[^>]*>[\s\S]*?(Share this newsletter|Refer a friend|Subscribe to keep reading|Leave a comment|Take the poll|Vote in the poll|Sponsored by|Advertisement)[\s\S]*?</div>''',
-    ]
-
-    for pattern in patterns:
-        html = re.sub(pattern, "", html, flags=re.IGNORECASE)
+    if blocks:
+        return "\n\n".join(blocks)
 
     return html
 
@@ -191,27 +110,24 @@ def strip_beehiiv_footer(html: str) -> str:
     ]
 
     lower_html = html.lower()
-
-    found_indexes = []
+    indexes = []
 
     for marker in markers:
         idx = lower_html.find(marker)
         if idx != -1:
-            found_indexes.append(idx)
+            indexes.append(idx)
 
-    if found_indexes:
-        return html[:min(found_indexes)]
+    if indexes:
+        return html[:min(indexes)]
 
     return html
 
 
 def clean_html(html: str) -> str:
-    html = remove_polls(html)
-    html = remove_native_ads(html)
-    html = remove_section_ads(html)
-    html = remove_common_native_blocks(html)
+    html = extract_custom_html_blocks(html)
     html = strip_beehiiv_footer(html)
 
+    html = re.sub(r"<title>[\s\S]*?</title>", "", html, flags=re.IGNORECASE)
     html = re.sub(r"\n\s*\n\s*\n+", "\n\n", html)
     html = re.sub(r"<p>\s*</p>", "", html, flags=re.IGNORECASE)
     html = re.sub(r"<div>\s*</div>", "", html, flags=re.IGNORECASE)
@@ -268,10 +184,6 @@ def main():
     text-decoration: none;
   }}
 
-  .hmn-notice a:hover {{
-    text-decoration: underline;
-  }}
-
   .hmn-shell {{
     max-width: 600px;
     margin: 0 auto;
@@ -297,25 +209,6 @@ def main():
     max-width: 100% !important;
   }}
 
-  .hmn-shell [class*="bh-ad"],
-  .hmn-shell [class*="beehiiv-ad"],
-  .hmn-shell [class*="native-ad"],
-  .hmn-shell [class*="ad-wrapper"],
-  .hmn-shell [class*="beehiiv-boost"],
-  .hmn-shell [class*="sponsored"],
-  .hmn-shell [data-sponsorship-id],
-  .hmn-shell [data-boost],
-  .hmn-shell beehiiv-ad {{
-    display: none !important;
-  }}
-
-  .hmn-shell .section:has(a[href*="beehiivads"]),
-  .hmn-shell .section:has(a[href*="_bhiiv=opp_"]),
-  .hmn-shell .section:has(a[href*="bhcl_id="]),
-  .hmn-shell .section:has(a[href*="mindstream.news"]) {{
-    display: none !important;
-  }}
-
   .hmn-footer {{
     max-width: 600px;
     margin: 28px auto 0 auto;
@@ -336,12 +229,6 @@ def main():
   }}
 
   @media (max-width: 480px) {{
-    .hmn-notice,
-    .hmn-shell,
-    .hmn-footer {{
-      max-width: 100%;
-    }}
-
     .hmn-footer {{
       flex-direction: column;
       gap: 16px;
@@ -366,21 +253,17 @@ def main():
 </div>
 
 <div class="hmn-footer">
-
-  <a href="{BEEHIIV_AFFILIATE_URL}"
-     target="_blank" rel="noopener noreferrer">
+  <a href="{BEEHIIV_AFFILIATE_URL}" target="_blank" rel="noopener noreferrer">
     <img
       src="https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/de8db07f-5edf-4790-be80-2c28563eede9/Add_a_subheading.png?t=1763656347"
       alt="Start your newsletter on beehiiv">
   </a>
 
-  <a href="{BOOKING_URL}"
-     target="_blank" rel="noopener noreferrer">
+  <a href="{BOOKING_URL}" target="_blank" rel="noopener noreferrer">
     <img
       src="https://beehiiv-images-production.s3.amazonaws.com/uploads/asset/file/f5603471-e469-4bfe-94a6-dd08601cbbd5/Add_a_subheading__1_.png?t=1763656403"
       alt="Book a newsletter consult">
   </a>
-
 </div>
 
 </body>
