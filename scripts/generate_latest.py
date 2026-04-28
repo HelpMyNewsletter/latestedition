@@ -60,58 +60,69 @@ def remove_polls(html: str) -> str:
 
 def remove_beehiiv_ads(html: str) -> str:
     """
-    Remove beehiiv ad sections that are often wrapped in generic
-    <div class="section"> blocks instead of obvious ad containers.
+    Remove beehiiv ads even when they are wrapped in generic nested sections.
+    This targets the whole ad section from its opening section div through
+    the next custom_html block.
     """
 
-    patterns = [
-        # Beehiiv Ads links usually include utm_source=beehiivads
-        r"<div[^>]*class=[\"'][^\"']*section[^\"']*[\"'][^>]*>[\s\S]*?utm_source=beehiivads[\s\S]*?</div>\s*(?=<div[^>]*class=[\"'][^\"']*custom_html)",
-
-        # Beehiiv Ad opportunity IDs usually include _bhiiv=opp_
-        r"<div[^>]*class=[\"'][^\"']*section[^\"']*[\"'][^>]*>[\s\S]*?_bhiiv=opp_[\s\S]*?</div>\s*(?=<div[^>]*class=[\"'][^\"']*custom_html)",
-
-        # Beehiiv ad click IDs commonly include bhcl_id
-        r"<div[^>]*class=[\"'][^\"']*section[^\"']*[\"'][^>]*>[\s\S]*?bhcl_id[\s\S]*?</div>\s*(?=<div[^>]*class=[\"'][^\"']*custom_html)",
-
-        # Fallback: any section that contains beehiivads, even if placement changes
-        r"<div[^>]*class=[\"'][^\"']*section[^\"']*[\"'][^>]*>[\s\S]*?beehiivads[\s\S]*?</div>",
+    ad_markers = [
+        "utm_source=beehiivads",
+        "_bhiiv=opp_",
+        "bhcl_id",
+        "Turn AI Into Extra Income",
+        "mindstream.news",
     ]
 
-    for pattern in patterns:
-        html = re.sub(pattern, "", html, flags=re.IGNORECASE)
+    for marker in ad_markers:
+        while marker.lower() in html.lower():
+            lower_html = html.lower()
+            marker_idx = lower_html.find(marker.lower())
+
+            section_start = lower_html.rfind("<div", 0, marker_idx)
+
+            while section_start != -1:
+                div_open = lower_html[section_start:section_start + 500]
+                if "class=" in div_open and "section" in div_open:
+                    break
+                section_start = lower_html.rfind("<div", 0, section_start)
+
+            if section_start == -1:
+                break
+
+            next_custom_html = lower_html.find('<div class="custom_html"', marker_idx)
+
+            if next_custom_html == -1:
+                next_custom_html = lower_html.find("<div class='custom_html'", marker_idx)
+
+            if next_custom_html != -1:
+                html = html[:section_start] + html[next_custom_html:]
+            else:
+                section_end = lower_html.find("</div>", marker_idx)
+
+                if section_end == -1:
+                    break
+
+                html = html[:section_start] + html[section_end + len("</div>"):]
 
     return html
 
 
 def remove_beehiiv_native_blocks(html: str) -> str:
-    """
-    Remove likely beehiiv-native blocks:
-    polls, referral widgets, recommendations, comments, subscribe prompts,
-    boost widgets, surveys, native scripts, and other internal embeds.
-    """
-
     patterns = [
-        # Custom beehiiv tags
         r"<beehiiv-[\w-]+[\s\S]*?</beehiiv-[\w-]+>",
         r"<beehiiv-[\w-]+[^>]*/>",
 
-        # Beehiiv scripts / embeds / iframes
         r"<script[^>]*beehiiv[^>]*>[\s\S]*?</script>",
         r"<script[^>]*beehiiv[^>]*/>",
         r"<iframe[^>]*beehiiv[^>]*>[\s\S]*?</iframe>",
         r"<iframe[^>]*beehiiv[^>]*/>",
 
-        # Data attributes commonly used for native blocks
         r"<div[^>]*data-[^>]*(poll|referral|recommendation|boost|ad|advertisement|survey|subscribe|comment)[^>]*>[\s\S]*?</div>",
 
-        # Class/id based native blocks
         r"<div[^>]*(class|id)=[\"'][^\"']*(bh-|poll|referral|recommendation|boost|ad|advertisement|sponsor|survey|subscribe|comment)[^\"']*[\"'][^>]*>[\s\S]*?</div>",
 
-        # Beehiiv referral/recommendation/boost links
         r"<a[^>]*href=[\"'][^\"']*beehiiv\.com[^\"']*(referral|recommend|boost|subscribe|poll|survey)[^\"']*[\"'][^>]*>[\s\S]*?</a>",
 
-        # Common native copy blocks
         r"<p[^>]*>[\s\S]*?(Share this newsletter|Refer a friend|Subscribe to keep reading|Leave a comment|Take the poll|Vote in the poll|Sponsored by|Advertisement)[\s\S]*?</p>",
         r"<div[^>]*>[\s\S]*?(Share this newsletter|Refer a friend|Subscribe to keep reading|Leave a comment|Take the poll|Vote in the poll|Sponsored by|Advertisement)[\s\S]*?</div>",
     ]
@@ -123,7 +134,6 @@ def remove_beehiiv_native_blocks(html: str) -> str:
 
 
 def strip_beehiiv_footer(html: str) -> str:
-    """Strip built-in Beehiiv footer included in RSS."""
     markers = [
         "powered by beehiiv",
         "published with beehiiv",
@@ -151,7 +161,6 @@ def clean_html(html: str) -> str:
     html = remove_beehiiv_native_blocks(html)
     html = strip_beehiiv_footer(html)
 
-    # Clean excess spacing left behind
     html = re.sub(r"\n\s*\n\s*\n+", "\n\n", html)
     html = re.sub(r"<p>\s*</p>", "", html, flags=re.IGNORECASE)
     html = re.sub(r"<div>\s*</div>", "", html, flags=re.IGNORECASE)
