@@ -2,11 +2,15 @@ name: Update Latest Edition
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "0 * * * *"
   workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: update-latest-edition
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -38,6 +42,7 @@ jobs:
           echo "===== SEARCH CHECKS ====="
           grep -n "Viewing note" index.html || true
           grep -n "Turn AI Into Extra Income" index.html || true
+          grep -n "Field Notes" index.html || true
           grep -n "max-width: 600px" index.html || true
 
       - name: Commit and push if changed
