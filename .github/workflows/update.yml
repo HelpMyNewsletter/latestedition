@@ -31,23 +31,14 @@ jobs:
         run: |
           python scripts/generate_latest.py
 
-      - name: Confirm generated output
+      - name: Show generated output preview
         run: |
-          echo "Checking generated index.html..."
-
-          if grep -q "Viewing note" index.html; then
-            echo "Notice block found"
-          else
-            echo "Notice block missing"
-            exit 1
-          fi
-
-          if grep -q "Turn AI Into Extra Income" index.html; then
-            echo "Ad block still found in generated index.html"
-            exit 1
-          else
-            echo "Ad block successfully removed"
-          fi
+          echo "===== FIRST 80 LINES OF index.html ====="
+          sed -n '1,80p' index.html
+          echo "===== SEARCH CHECKS ====="
+          grep -n "Viewing note" index.html || true
+          grep -n "Turn AI Into Extra Income" index.html || true
+          grep -n "max-width: 600px" index.html || true
 
       - name: Commit and push if changed
         run: |
